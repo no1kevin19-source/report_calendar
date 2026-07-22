@@ -5,3 +5,7 @@
   padding-left: 2px;
   overflow: visible;
 }
+
+.week-panel .eyebrow {
+  display: none;
+}
