@@ -1,1 +1,10 @@
-.vercel
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+app/build/
+release/
+*.keystore
+*.jks
+release-signing.properties

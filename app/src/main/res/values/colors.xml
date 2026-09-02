@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#F7F5FA</color>
+    <color name="surface_primary">#FFFFFF</color>
+    <color name="surface_soft">#F1EFF5</color>
+    <color name="lavender">#AEE2FF</color>
+    <color name="lavender_strong">#AAC4FF</color>
+    <color name="lavender_soft">#E3F2FD</color>
+    <color name="butter_yellow">#92EEFF</color>
+    <color name="charcoal">#222326</color>
+    <color name="text_primary">#1D1E22</color>
+    <color name="text_secondary">#1D1E22</color>
+    <color name="outline">#E8E5ED</color>
+    <color name="completed">#C4F7CA</color>
+    <color name="danger_soft">#FCE8E7</color>
+    <color name="danger">#B42318</color>
+    <color name="calendar_saturday">#1E63D6</color>
+    <color name="calendar_holiday">#D93025</color>
+    <color name="calendar_muted">#A5A2AC</color>
+    <color name="holiday_soft">#FDECEC</color>
+</resources>

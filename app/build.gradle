@@ -1,0 +1,46 @@
+plugins {
+    id "com.android.application"
+}
+
+def releaseSigningFile = rootProject.file("release-signing.properties")
+def releaseSigningProperties = new Properties()
+if (releaseSigningFile.exists()) {
+    releaseSigningFile.withInputStream { stream ->
+        releaseSigningProperties.load(stream)
+    }
+}
+
+android {
+    namespace "com.reportcalendar.app"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.reportcalendar.app"
+        minSdk 23
+        targetSdk 35
+        versionCode 2
+        versionName "1.0.1"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        release {
+            storeFile releaseSigningProperties["storeFile"] ? rootProject.file(releaseSigningProperties["storeFile"]) : null
+            storePassword releaseSigningProperties["storePassword"]
+            keyAlias releaseSigningProperties["keyAlias"]
+            keyPassword releaseSigningProperties["keyPassword"]
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.release
+        }
+    }
+}

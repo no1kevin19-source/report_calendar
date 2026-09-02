@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="screen_padding">20dp</dimen>
+    <dimen name="card_padding">20dp</dimen>
+    <dimen name="card_radius">24dp</dimen>
+    <dimen name="input_radius">16dp</dimen>
+    <dimen name="button_height">52dp</dimen>
+    <dimen name="touch_target">48dp</dimen>
+</resources>
