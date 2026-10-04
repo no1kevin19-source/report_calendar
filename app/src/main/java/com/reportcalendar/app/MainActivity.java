@@ -5,6 +5,7 @@ import android.app.DatePickerDialog;
 import android.app.Dialog;
 import android.app.TimePickerDialog;
 import android.content.ClipData;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -14,6 +15,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -23,6 +25,7 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
@@ -37,12 +40,22 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.Timestamp;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.firestore.DocumentSnapshot;
+import com.google.firebase.firestore.FirebaseFirestore;
+import com.google.firebase.firestore.QuerySnapshot;
+
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 public class MainActivity extends Activity {
     private static final int PHOTO_REQUEST_CODE = 4001;
@@ -50,6 +63,22 @@ public class MainActivity extends Activity {
     private static final String KEY_ASSIGNMENTS = "assignments";
     private static final String KEY_REMINDER_DAYS = "reminder_days";
     private static final String KEY_REMINDER_TIME = "reminder_time";
+    private static final String FIRESTORE_ASSIGNMENTS_COLLECTION = "assignments";
+    private static final String FIRESTORE_USERS_COLLECTION = "users";
+    private static final String STATE_TITLE = "state_title";
+    private static final String STATE_SUBJECT_INDEX = "state_subject_index";
+    private static final String STATE_CUSTOM_SUBJECT = "state_custom_subject";
+    private static final String STATE_PERIOD_INDEX = "state_period_index";
+    private static final String STATE_DETAIL = "state_detail";
+    private static final String STATE_DUE_MILLIS = "state_due_millis";
+    private static final String STATE_PHOTOS = "state_photos";
+    private static final String STATE_EDITING_ID = "state_editing_id";
+    private static final String STATE_FORM_VISIBLE = "state_form_visible";
+    private static final String STATE_REMINDER_VISIBLE = "state_reminder_visible";
+    private static final String STATE_REMINDER_DRAFT_DAYS = "state_reminder_draft_days";
+    private static final String STATE_REMINDER_DRAFT_TIME = "state_reminder_draft_time";
+    private static final String STATE_VISIBLE_MONTH = "state_visible_month";
+    private static final String STATE_SELECTED_DAY = "state_selected_day";
 
     private final List<Assignment> assignments = new ArrayList<>();
     private final List<Uri> selectedPhotos = new ArrayList<>();
@@ -57,9 +86,12 @@ public class MainActivity extends Activity {
     private final SimpleDateFormat shortDateFormat = new SimpleDateFormat("M월 d일", Locale.KOREAN);
 
     private SharedPreferences prefs;
+    private FirebaseAuth firebaseAuth;
+    private FirebaseFirestore firestoreDb;
     private ScrollView rootScrollView;
     private LinearLayout content;
     private View dashboardSection;
+    private View weekSection;
     private View formSection;
     private View calendarSection;
     private View reminderSection;
@@ -71,7 +103,12 @@ public class MainActivity extends Activity {
     private TextView monthTitle;
     private TextView nearestText;
     private TextView nearestMetaText;
+    private LinearLayout nearestCard;
+    private LinearLayout overdueCard;
+    private TextView overdueText;
+    private TextView overdueMetaText;
     private TextView brandSubtitle;
+    private TextView formHeading;
     private TextView photoCountText;
     private HorizontalScrollView photoPreviewScroll;
     private LinearLayout photoPreviewList;
@@ -86,25 +123,78 @@ public class MainActivity extends Activity {
     private Spinner reminderDaySpinner;
     private Button dueDateButton;
     private Button formToggleButton;
+    private Button formSaveButton;
+    private Button formCancelButton;
     private Button reminderToggleButton;
+    private Button reminderTimeButton;
     private Calendar selectedDueDate;
     private Calendar visibleMonth;
     private Calendar selectedCalendarDay;
     private Assignment editingAssignment;
+    private String editingAssignmentId;
+    private int reminderDraftDays;
+    private String reminderDraftTime;
+    private long lastTodayMillis;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        FirebaseApp.initializeApp(this);
+        firebaseAuth = FirebaseAuth.getInstance();
+        firestoreDb = FirebaseFirestore.getInstance();
         selectedDueDate = startOfToday();
         visibleMonth = startOfToday();
         visibleMonth.set(Calendar.DAY_OF_MONTH, 1);
         selectedCalendarDay = startOfToday();
+        lastTodayMillis = startOfToday().getTimeInMillis();
         getWindow().setStatusBarColor(color(R.color.app_background));
         getWindow().setNavigationBarColor(color(R.color.app_background));
         loadAssignments();
         buildUi();
+        if (savedInstanceState != null) {
+            restoreTransientState(savedInstanceState);
+        } else {
+            loadReminderDraftFromSavedSettings();
+            updateFormMode();
+        }
         refreshUi();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        long todayMillis = startOfToday().getTimeInMillis();
+        if (lastTodayMillis != 0 && todayMillis != lastTodayMillis) {
+            lastTodayMillis = todayMillis;
+            refreshHeaderSummary();
+            refreshNearest();
+            refreshWeek();
+            refreshCalendar();
+        }
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putString(STATE_TITLE, titleInput == null ? "" : titleInput.getText().toString());
+        outState.putInt(STATE_SUBJECT_INDEX, subjectSpinner == null ? 0 : subjectSpinner.getSelectedItemPosition());
+        outState.putString(STATE_CUSTOM_SUBJECT, customSubjectInput == null ? "" : customSubjectInput.getText().toString());
+        outState.putInt(STATE_PERIOD_INDEX, periodSpinner == null ? 0 : periodSpinner.getSelectedItemPosition());
+        outState.putString(STATE_DETAIL, detailInput == null ? "" : detailInput.getText().toString());
+        outState.putLong(STATE_DUE_MILLIS, selectedDueDate == null ? startOfToday().getTimeInMillis() : selectedDueDate.getTimeInMillis());
+        ArrayList<String> photoStrings = new ArrayList<>();
+        for (Uri uri : selectedPhotos) {
+            photoStrings.add(uri.toString());
+        }
+        outState.putStringArrayList(STATE_PHOTOS, photoStrings);
+        outState.putString(STATE_EDITING_ID, editingAssignmentId);
+        outState.putBoolean(STATE_FORM_VISIBLE, formBody != null && formBody.getVisibility() == View.VISIBLE);
+        outState.putBoolean(STATE_REMINDER_VISIBLE, reminderBody != null && reminderBody.getVisibility() == View.VISIBLE);
+        outState.putInt(STATE_REMINDER_DRAFT_DAYS, reminderDraftDays);
+        outState.putString(STATE_REMINDER_DRAFT_TIME, reminderDraftTime);
+        outState.putLong(STATE_VISIBLE_MONTH, visibleMonth == null ? startOfToday().getTimeInMillis() : visibleMonth.getTimeInMillis());
+        outState.putLong(STATE_SELECTED_DAY, selectedCalendarDay == null ? startOfToday().getTimeInMillis() : selectedCalendarDay.getTimeInMillis());
     }
 
     private void buildUi() {
@@ -115,7 +205,7 @@ public class MainActivity extends Activity {
 
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(20), dp(16), dp(20), dp(40));
+        content.setPadding(dp(20), dp(42), dp(20), dp(40));
         rootScrollView.addView(content, new ScrollView.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -123,10 +213,12 @@ public class MainActivity extends Activity {
 
         content.addView(buildHeader());
         dashboardSection = buildDashboard();
+        weekSection = buildWeekPanel();
         calendarSection = buildCalendarPanel();
         formSection = buildFormPanel();
         reminderSection = buildReminderPanel();
         content.addView(dashboardSection);
+        content.addView(weekSection);
         content.addView(calendarSection);
         content.addView(formSection);
         content.addView(reminderSection);
@@ -136,7 +228,9 @@ public class MainActivity extends Activity {
     private View buildHeader() {
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(4), dp(4), dp(4), dp(4));
+        header.setPadding(dp(8), dp(8), dp(8), dp(8));
+        header.setBackground(roundRect(color(R.color.surface_primary), color(R.color.outline), dp(28)));
+        header.setElevation(dp(1));
         LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -172,14 +266,28 @@ public class MainActivity extends Activity {
         dashboard.setOrientation(LinearLayout.VERTICAL);
         dashboard.setPadding(0, 0, 0, dp(22));
 
-        LinearLayout nearestCard = surfaceCard(color(R.color.lavender_soft), 0);
-        nearestCard.addView(eyebrow("가장 가까운 수행평가"));
+        nearestCard = surfaceCard(color(R.color.lavender_soft), 0);
+        nearestCard.setClickable(true);
+        nearestCard.setFocusable(true);
+        nearestCard.addView(eyebrow("다가오는 수행평가"));
         nearestText = text("", 21, color(R.color.text_primary), Typeface.BOLD);
         nearestCard.addView(nearestText);
         nearestMetaText = text("", 13, color(R.color.text_secondary), Typeface.NORMAL);
         nearestMetaText.setPadding(0, dp(8), 0, 0);
         nearestCard.addView(nearestMetaText);
         dashboard.addView(nearestCard);
+
+        overdueCard = surfaceCard(color(R.color.danger_soft), 0);
+        overdueCard.setClickable(true);
+        overdueCard.setFocusable(true);
+        overdueCard.addView(eyebrow("확인 필요"));
+        overdueText = text("기한 지난 과제 0개", 19, color(R.color.danger), Typeface.BOLD);
+        overdueCard.addView(overdueText);
+        overdueMetaText = text("눌러서 지난 과제를 확인해요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        overdueMetaText.setPadding(0, dp(8), 0, 0);
+        overdueCard.addView(overdueMetaText);
+        overdueCard.setVisibility(View.GONE);
+        dashboard.addView(overdueCard);
 
         TextView quickTitle = text("빠른 기능", 18, color(R.color.text_primary), Typeface.BOLD);
         quickTitle.setPadding(0, dp(8), 0, dp(12));
@@ -200,7 +308,7 @@ public class MainActivity extends Activity {
             quickActionParams(0, 0)
         );
         quickActions.addView(
-            quickActionCard(R.drawable.ic_week, "이번 주", "이번 주 마감 확인", color(R.color.butter_yellow), color(R.color.text_primary), () -> scrollTo(calendarSection)),
+            quickActionCard(R.drawable.ic_week, "이번 주", "이번 주 마감 확인", color(R.color.butter_yellow), color(R.color.text_primary), () -> scrollTo(weekSection)),
             quickActionParams(dp(8), 0)
         );
         quickActions.addView(
@@ -220,8 +328,8 @@ public class MainActivity extends Activity {
         panel.addView(eyebrow("일정 관리"));
         LinearLayout head = row();
         head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView heading = sectionTitle("수행평가 등록");
-        head.addView(heading, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        formHeading = sectionTitle("수행평가 등록");
+        head.addView(formHeading, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         formToggleButton = compactButton("열기");
         head.addView(formToggleButton);
         panel.addView(head);
@@ -296,7 +404,7 @@ public class MainActivity extends Activity {
         formBody.addView(label("첨부사진"));
         formBody.addView(photoButton);
 
-        photoCountText = text("사진 중복 업로드 가능", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        photoCountText = text("사진을 여러 장 첨부할 수 있어요", 13, color(R.color.text_secondary), Typeface.NORMAL);
         photoCountText.setPadding(0, dp(6), 0, dp(12));
         formBody.addView(photoCountText);
 
@@ -312,9 +420,18 @@ public class MainActivity extends Activity {
         previewParams.bottomMargin = dp(14);
         formBody.addView(photoPreviewScroll, previewParams);
 
-        Button saveButton = primaryButton("저장");
-        saveButton.setOnClickListener(view -> saveAssignmentFromForm());
-        formBody.addView(saveButton);
+        LinearLayout formActions = row();
+        formSaveButton = primaryButton("등록하기");
+        formSaveButton.setOnClickListener(view -> saveAssignmentFromForm());
+        formActions.addView(formSaveButton, new LinearLayout.LayoutParams(0, dp(52), 1));
+
+        formCancelButton = secondaryButton("수정 취소");
+        formCancelButton.setVisibility(View.GONE);
+        formCancelButton.setOnClickListener(view -> cancelFormEditing());
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, dp(52), 1);
+        cancelParams.leftMargin = dp(8);
+        formActions.addView(formCancelButton, cancelParams);
+        formBody.addView(formActions);
 
         panel.addView(formBody);
 
@@ -378,8 +495,6 @@ public class MainActivity extends Activity {
         });
         controls.addView(next, new LinearLayout.LayoutParams(dp(44), dp(44)));
         panel.addView(controls);
-        panel.addView(buildWeekPanel());
-
         calendarGrid = new GridLayout(this);
         calendarGrid.setColumnCount(7);
         calendarGrid.setUseDefaultMargins(false);
@@ -399,7 +514,7 @@ public class MainActivity extends Activity {
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.addView(text("다가오는 수행평가 알림", 19, color(R.color.text_primary), Typeface.BOLD));
-        TextView description = text("알림 기준과 시간을 저장해요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        TextView description = text("준비 중 · 현재는 설정만 저장되며 알림은 발송되지 않아요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
         description.setPadding(0, dp(4), dp(8), 0);
         copy.addView(description);
         head.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -417,33 +532,62 @@ public class MainActivity extends Activity {
             reminderToggleButton.setText(opening ? "접기" : "열기");
         });
 
+        TextView preparing = text("준비 중", 12, color(R.color.text_primary), Typeface.BOLD);
+        preparing.setPadding(dp(10), dp(5), dp(10), dp(5));
+        preparing.setBackground(pill(color(R.color.butter_yellow), 0));
+        LinearLayout.LayoutParams preparingParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        preparingParams.bottomMargin = dp(10);
+        reminderBody.addView(preparing, preparingParams);
+
+        TextView notice = text("현재는 알림 기준과 시간만 저장돼요. 실제 알림 발송은 아직 준비 중입니다.", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        notice.setPadding(dp(14), dp(12), dp(14), dp(12));
+        notice.setBackground(roundRect(color(R.color.surface_soft), 0, dp(16)));
+        reminderBody.addView(notice);
+
         reminderDaySpinner = spinner(new String[]{"1일 전", "2일 전", "3일 전", "7일 전"});
+        reminderDaySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                reminderDraftDays = position;
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
         reminderBody.addView(label("알림 시작일"));
         reminderBody.addView(reminderDaySpinner);
 
-        Button timeButton = secondaryButton("알림 시간 선택");
-        timeButton.setOnClickListener(view -> pickReminderTime());
+        reminderTimeButton = secondaryButton("알림 시간 선택");
+        reminderTimeButton.setOnClickListener(view -> pickReminderTime());
         reminderBody.addView(label("알림 시간"));
-        reminderBody.addView(timeButton);
+        reminderBody.addView(reminderTimeButton);
 
         LinearLayout actions = row();
-        Button save = primaryButton("저장");
+        Button save = primaryButton("설정 저장");
         save.setOnClickListener(view -> {
-            prefs.edit()
-                .putInt(KEY_REMINDER_DAYS, reminderDaySpinner.getSelectedItemPosition())
-                .apply();
-            Toast.makeText(this, "저장되었습니다", Toast.LENGTH_SHORT).show();
+            SharedPreferences.Editor editor = prefs.edit().putInt(KEY_REMINDER_DAYS, reminderDraftDays);
+            if (reminderDraftTime == null || reminderDraftTime.isEmpty()) {
+                editor.remove(KEY_REMINDER_TIME);
+            } else {
+                editor.putString(KEY_REMINDER_TIME, reminderDraftTime);
+            }
+            editor.apply();
+            Toast.makeText(this, "설정이 저장되었어요", Toast.LENGTH_SHORT).show();
             refreshReminderSummary();
         });
-        actions.addView(save, new LinearLayout.LayoutParams(0, dp(48), 1));
+        actions.addView(save, new LinearLayout.LayoutParams(0, dp(52), 1));
 
         Button cancel = secondaryButton("취소");
         cancel.setOnClickListener(view -> {
-            prefs.edit().remove(KEY_REMINDER_DAYS).remove(KEY_REMINDER_TIME).apply();
-            Toast.makeText(this, "취소되었습니다", Toast.LENGTH_SHORT).show();
+            loadReminderDraftFromSavedSettings();
+            Toast.makeText(this, "저장 전 변경사항을 취소했습니다", Toast.LENGTH_SHORT).show();
             refreshReminderSummary();
         });
-        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, dp(52), 1);
         cancelParams.leftMargin = dp(8);
         actions.addView(cancel, cancelParams);
         LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
@@ -456,6 +600,7 @@ public class MainActivity extends Activity {
         reminderSummary = text("", 13, color(R.color.text_secondary), Typeface.NORMAL);
         reminderSummary.setPadding(0, dp(10), 0, 0);
         reminderBody.addView(reminderSummary);
+        loadReminderDraftFromSavedSettings();
         panel.addView(reminderBody);
         return panel;
     }
@@ -505,8 +650,21 @@ public class MainActivity extends Activity {
             return;
         }
 
-        Assignment assignment = editingAssignment == null ? new Assignment() : editingAssignment;
-        assignment.id = assignment.id == null ? String.valueOf(System.currentTimeMillis()) : assignment.id;
+        Assignment assignment;
+        boolean isNewAssignment = editingAssignmentId == null;
+        if (isNewAssignment) {
+            assignment = new Assignment();
+            assignment.id = String.valueOf(System.currentTimeMillis());
+        } else {
+            assignment = findAssignmentById(editingAssignmentId);
+            if (assignment == null) {
+                Toast.makeText(this, "수정할 수행평가를 찾을 수 없습니다", Toast.LENGTH_SHORT).show();
+                editingAssignment = null;
+                editingAssignmentId = null;
+                updateFormMode();
+                return;
+            }
+        }
         assignment.title = title;
         assignment.subject = subject;
         assignment.detail = detailInput.getText().toString().trim();
@@ -517,13 +675,15 @@ public class MainActivity extends Activity {
             assignment.photos.add(uri.toString());
         }
 
-        if (editingAssignment == null) {
+        if (isNewAssignment) {
             assignments.add(assignment);
         }
 
         editingAssignment = null;
+        editingAssignmentId = null;
         saveAssignments();
         clearForm();
+        updateFormMode();
         refreshUi();
         Toast.makeText(this, "저장되었습니다", Toast.LENGTH_SHORT).show();
     }
@@ -544,15 +704,25 @@ public class MainActivity extends Activity {
 
     private void pickReminderTime() {
         Calendar now = Calendar.getInstance();
+        int initialHour = now.get(Calendar.HOUR_OF_DAY);
+        int initialMinute = now.get(Calendar.MINUTE);
+        if (reminderDraftTime != null && reminderDraftTime.matches("\\d{2}:\\d{2}")) {
+            try {
+                initialHour = Integer.parseInt(reminderDraftTime.substring(0, 2));
+                initialMinute = Integer.parseInt(reminderDraftTime.substring(3, 5));
+            } catch (NumberFormatException ignored) {
+                initialHour = now.get(Calendar.HOUR_OF_DAY);
+                initialMinute = now.get(Calendar.MINUTE);
+            }
+        }
         new TimePickerDialog(
             this,
             (view, hourOfDay, minute) -> {
-                String value = String.format(Locale.KOREAN, "%02d:%02d", hourOfDay, minute);
-                prefs.edit().putString(KEY_REMINDER_TIME, value).apply();
-                refreshReminderSummary();
+                reminderDraftTime = String.format(Locale.KOREAN, "%02d:%02d", hourOfDay, minute);
+                updateReminderTimeButton();
             },
-            now.get(Calendar.HOUR_OF_DAY),
-            now.get(Calendar.MINUTE),
+            initialHour,
+            initialMinute,
             true
         ).show();
     }
@@ -581,7 +751,7 @@ public class MainActivity extends Activity {
         } else if (data.getData() != null) {
             persistAndAddPhoto(data.getData());
         }
-        photoCountText.setText(selectedPhotos.isEmpty() ? "사진 중복 업로드 가능" : selectedPhotos.size() + "장 선택됨");
+        refreshPhotoStatusText();
         refreshPhotoPreview();
     }
 
@@ -601,6 +771,9 @@ public class MainActivity extends Activity {
         photoPreviewList.removeAllViews();
         photoPreviewScroll.setVisibility(selectedPhotos.isEmpty() ? View.GONE : View.VISIBLE);
         for (Uri uri : selectedPhotos) {
+            FrameLayout thumbnail = new FrameLayout(this);
+            thumbnail.setPadding(0, 0, dp(8), 0);
+
             ImageView image = new ImageView(this);
             image.setImageURI(uri);
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -608,10 +781,34 @@ public class MainActivity extends Activity {
             image.setBackground(roundRect(color(R.color.surface_soft), 0, dp(16)));
             image.setClipToOutline(true);
             image.setOnClickListener(view -> openPhoto(uri));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(88), dp(88));
+            thumbnail.addView(image, new FrameLayout.LayoutParams(dp(88), dp(88)));
+
+            TextView removeButton = photoRemoveButton();
+            FrameLayout removeTarget = iconTouchTarget(removeButton, dp(24), "첨부사진 삭제");
+            removeTarget.setOnClickListener(view -> removeSelectedPhoto(uri));
+            FrameLayout.LayoutParams removeParams = new FrameLayout.LayoutParams(dp(48), dp(48));
+            removeParams.gravity = Gravity.TOP | Gravity.RIGHT;
+            removeParams.topMargin = dp(-9);
+            removeParams.rightMargin = dp(-1);
+            thumbnail.addView(removeTarget, removeParams);
+
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(96), dp(88));
             params.rightMargin = dp(8);
-            photoPreviewList.addView(image, params);
+            photoPreviewList.addView(thumbnail, params);
         }
+    }
+
+    private void removeSelectedPhoto(Uri uri) {
+        selectedPhotos.remove(uri);
+        refreshPhotoStatusText();
+        refreshPhotoPreview();
+    }
+
+    private void refreshPhotoStatusText() {
+        if (photoCountText == null) {
+            return;
+        }
+        photoCountText.setText(selectedPhotos.isEmpty() ? "사진을 여러 장 첨부할 수 있어요" : selectedPhotos.size() + "장 선택됨");
     }
 
     private void refreshUi() {
@@ -624,21 +821,53 @@ public class MainActivity extends Activity {
     }
 
     private void refreshNearest() {
-        Assignment nearest = null;
+        Assignment nearestUpcoming = null;
+        List<Assignment> overdueItems = new ArrayList<>();
+        long today = startOfToday().getTimeInMillis();
         for (Assignment assignment : assignments) {
             if (assignment.complete) {
                 continue;
             }
-            if (nearest == null || assignment.dueMillis < nearest.dueMillis) {
-                nearest = assignment;
+            if (assignment.dueMillis < today) {
+                overdueItems.add(assignment);
+                continue;
+            }
+            if (nearestUpcoming == null || assignment.dueMillis < nearestUpcoming.dueMillis) {
+                nearestUpcoming = assignment;
             }
         }
-        if (nearest == null) {
-            nearestText.setText("예정된 수행평가가 없어요");
-            nearestMetaText.setText("등록 버튼으로 첫 일정을 추가해 보세요.");
+        overdueItems.sort(Comparator.comparingLong(item -> item.dueMillis));
+
+        if (nearestUpcoming == null) {
+            nearestText.setText("다가오는 수행평가가 없어요");
+            nearestMetaText.setText(overdueItems.isEmpty()
+                ? "등록 버튼으로 첫 일정을 추가해 보세요."
+                : "기한 지난 과제를 먼저 확인해 주세요.");
+            nearestCard.setOnClickListener(null);
+            nearestCard.setContentDescription("다가오는 수행평가 없음");
         } else {
-            nearestText.setText(nearest.title);
-            nearestMetaText.setText(nearest.subject + " · " + nearest.period + " · " + shortDateFormat.format(nearest.dueMillis) + " · " + dDayText(nearest.dueMillis));
+            Assignment target = nearestUpcoming;
+            nearestText.setText(target.title);
+            String dueLabel = sameDay(target.dueMillis, today) ? "오늘 마감" : shortDateFormat.format(target.dueMillis);
+            nearestMetaText.setText(dueLabel + " · " + target.subject + " · " + target.period + " · " + dDayText(target.dueMillis));
+            nearestCard.setOnClickListener(view -> showDetail(target));
+            nearestCard.setContentDescription("다가오는 수행평가, " + target.title + ", " + dueLabel + ", 상세 보기");
+        }
+
+        if (overdueItems.isEmpty()) {
+            overdueCard.setVisibility(View.GONE);
+            overdueCard.setOnClickListener(null);
+        } else {
+            overdueCard.setVisibility(View.VISIBLE);
+            overdueText.setText("기한 지난 과제 " + overdueItems.size() + "개");
+            overdueMetaText.setText("자동 완료하지 않았어요. 눌러서 확인해요.");
+            ArrayList<Assignment> overdueCopy = new ArrayList<>(overdueItems);
+            overdueCard.setContentDescription("기한 지난 과제 " + overdueItems.size() + "개, 목록 보기");
+            overdueCard.setOnClickListener(view -> showAssignmentListDialog(
+                "기한 지난 과제",
+                overdueCopy.size() + "개의 미완료 과제가 지나갔어요.",
+                overdueCopy
+            ));
         }
     }
 
@@ -702,8 +931,15 @@ public class MainActivity extends Activity {
             return;
         }
 
-        for (Assignment assignment : weekItems) {
-            weekList.addView(assignmentRow(assignment));
+        boolean compactRows = weekItems.size() > 2;
+        for (int index = 0; index < weekItems.size(); index++) {
+            View row = assignmentRow(weekItems.get(index), compactRows);
+            if (index == 0) {
+                LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) row.getLayoutParams();
+                params.topMargin = dp(12);
+                row.setLayoutParams(params);
+            }
+            weekList.addView(row);
         }
     }
 
@@ -817,7 +1053,48 @@ public class MainActivity extends Activity {
     }
 
     private View assignmentRow(Assignment assignment) {
+        return assignmentRow(assignment, false);
+    }
+
+    private View assignmentRow(Assignment assignment, boolean compact) {
         LinearLayout row = surfaceCard(assignment.complete ? color(R.color.completed) : color(R.color.surface_primary), color(R.color.outline));
+        if (compact) {
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(14), dp(10), dp(12), dp(10));
+            row.setMinimumHeight(dp(58));
+            LinearLayout.LayoutParams compactParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            );
+            compactParams.bottomMargin = dp(8);
+            row.setLayoutParams(compactParams);
+            row.setOnClickListener(view -> showDetail(assignment));
+
+            LinearLayout copy = new LinearLayout(this);
+            copy.setOrientation(LinearLayout.VERTICAL);
+
+            TextView title = text(assignment.title, 14, color(R.color.text_primary), Typeface.BOLD);
+            title.setSingleLine(true);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            copy.addView(title);
+
+            String meta = assignment.subject + " · " + shortDateFormat.format(assignment.dueMillis) + " · " + assignment.period + (assignment.complete ? " · 완료" : "");
+            TextView metaText = text(meta, 11, color(R.color.text_secondary), Typeface.NORMAL);
+            metaText.setSingleLine(true);
+            metaText.setEllipsize(TextUtils.TruncateAt.END);
+            metaText.setPadding(0, dp(4), dp(8), 0);
+            copy.addView(metaText);
+
+            row.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+            TextView dday = text(dDayText(assignment.dueMillis), 11, color(R.color.text_primary), Typeface.BOLD);
+            dday.setPadding(dp(9), dp(4), dp(9), dp(4));
+            dday.setBackground(pill(color(R.color.lavender), 0));
+            row.addView(dday);
+            return row;
+        }
+
         row.setPadding(dp(18), dp(15), dp(18), dp(15));
         row.setOnClickListener(view -> showDetail(assignment));
 
@@ -840,6 +1117,10 @@ public class MainActivity extends Activity {
     }
 
     private void showAssignmentsForDay(List<Assignment> dayAssignments) {
+        showAssignmentListDialog("이 날짜의 수행평가", dayAssignments.size() + "개의 일정이 있어요", dayAssignments);
+    }
+
+    private void showAssignmentListDialog(String titleValue, String subtitleValue, List<Assignment> items) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
 
@@ -852,33 +1133,39 @@ public class MainActivity extends Activity {
         head.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
-        copy.addView(text("이 날짜의 수행평가", 21, color(R.color.text_primary), Typeface.BOLD));
-        TextView count = text(dayAssignments.size() + "개의 일정이 있어요", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        copy.addView(text(titleValue, 21, color(R.color.text_primary), Typeface.BOLD));
+        TextView count = text(subtitleValue, 13, color(R.color.text_secondary), Typeface.NORMAL);
         count.setPadding(0, dp(6), 0, 0);
         copy.addView(count);
         head.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        ImageButton close = iconImageButton(R.drawable.ic_close, "안내창 닫기", color(R.color.surface_soft), color(R.color.text_primary));
+        FrameLayout close = closeButtonTarget("안내창 닫기", color(R.color.surface_soft), color(R.color.text_primary));
         close.setOnClickListener(view -> dialog.dismiss());
         head.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
         card.addView(head);
 
+        ScrollView listScroll = new MaxHeightScrollView(this, (int) (getResources().getDisplayMetrics().heightPixels * 0.52f));
+        listScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
+        listScroll.addView(list, new ScrollView.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
         LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         );
         listParams.topMargin = dp(18);
-        card.addView(list, listParams);
+        card.addView(listScroll, listParams);
 
-        for (Assignment assignment : dayAssignments) {
+        for (Assignment assignment : items) {
             list.addView(dayDialogRow(assignment, dialog));
         }
 
         dialog.setContentView(card);
-        styleCenteredDialog(dialog, 0.92f, 420);
         dialog.show();
+        styleCenteredDialog(dialog, 0.92f, 420);
     }
 
     private View dayDialogRow(Assignment assignment, Dialog parentDialog) {
@@ -942,285 +1229,28 @@ public class MainActivity extends Activity {
         head.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = text(assignment.title, 22, color(R.color.text_primary), Typeface.BOLD);
         head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ImageButton close = iconImageButton(R.drawable.ic_close, "상세 정보 닫기", color(R.color.surface_soft), color(R.color.text_primary));
+        FrameLayout close = closeButtonTarget("상세 정보 닫기", color(R.color.surface_soft), color(R.color.text_primary));
         close.setOnClickListener(view -> dialog.dismiss());
         head.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
         card.addView(head);
 
+        ScrollView detailScroll = new MaxHeightScrollView(this, (int) (getResources().getDisplayMetrics().heightPixels * 0.48f));
+        detailScroll.setFillViewport(false);
+        detailScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        detailScroll.setClipToPadding(false);
+        LinearLayout detailContent = new LinearLayout(this);
+        detailContent.setOrientation(LinearLayout.VERTICAL);
+        detailScroll.addView(detailContent, new ScrollView.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
         TextView meta = text(assignment.subject + " · " + assignment.period + " · " + dateFormat.format(assignment.dueMillis), 13, color(R.color.text_secondary), Typeface.NORMAL);
         meta.setPadding(0, dp(10), 0, 0);
-        card.addView(meta);
+        detailContent.addView(meta);
 
         TextView dday = text(dDayText(assignment.dueMillis), 13, color(R.color.text_primary), Typeface.BOLD);
-        dday.setPadding(dp(12), dp(6), dp(12), dp(6));
-        dday.setBackground(pill(assignment.complete ? color(R.color.completed) : color(R.color.butter_yellow), 0));
-        LinearLayout.LayoutParams ddayParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ddayParams.topMargin = dp(14);
-        card.addView(dday, ddayParams);
-
-        if (!assignment.detail.isEmpty()) {
-            TextView detailLabel = eyebrow("세부 내용");
-            detailLabel.setPadding(0, dp(20), 0, dp(8));
-            card.addView(detailLabel);
-            TextView detail = text(assignment.detail, 15, color(R.color.text_primary), Typeface.NORMAL);
-            detail.setPadding(dp(16), dp(14), dp(16), dp(14));
-            detail.setBackground(roundRect(color(R.color.surface_soft), 0, dp(18)));
-            card.addView(detail);
-        }
-
-        if (!assignment.photos.isEmpty()) {
-            TextView photoLabel = eyebrow("첨부사진");
-            photoLabel.setPadding(0, dp(20), 0, dp(8));
-            card.addView(photoLabel);
-            HorizontalScrollView scroll = new HorizontalScrollView(this);
-            scroll.setHorizontalScrollBarEnabled(false);
-            LinearLayout photos = row();
-            for (String photo : assignment.photos) {
-                ImageView image = new ImageView(this);
-                image.setImageURI(Uri.parse(photo));
-                image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                image.setContentDescription("첨부사진 크게 보기");
-                image.setBackground(roundRect(color(R.color.surface_soft), 0, dp(16)));
-                image.setClipToOutline(true);
-                image.setOnClickListener(view -> openPhoto(Uri.parse(photo)));
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(92), dp(92));
-                params.rightMargin = dp(8);
-                photos.addView(image, params);
-            }
-            scroll.addView(photos);
-            card.addView(scroll);
-        }
-
-        LinearLayout actions = row();
-        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-        actionsParams.topMargin = dp(22);
-        Button delete = actionButton("삭제", color(R.color.danger_soft), color(R.color.danger));
-        delete.setOnClickListener(view -> confirmDelete(assignment, dialog));
-        actions.addView(delete, new LinearLayout.LayoutParams(0, dp(52), 1));
-        Button edit = actionButton("수정", color(R.color.lavender_soft), color(R.color.text_primary));
-        edit.setOnClickListener(view -> {
-            dialog.dismiss();
-            editAssignment(assignment);
-        });
-        LinearLayout.LayoutParams editParams = new LinearLayout.LayoutParams(0, dp(52), 1);
-        editParams.leftMargin = dp(8);
-        actions.addView(edit, editParams);
-        Button complete = actionButton(assignment.complete ? "미완료" : "완료", color(R.color.charcoal), Color.WHITE);
-        complete.setOnClickListener(view -> {
-            assignment.complete = !assignment.complete;
-            saveAssignments();
-            refreshUi();
-            dialog.dismiss();
-        });
-        LinearLayout.LayoutParams completeParams = new LinearLayout.LayoutParams(0, dp(52), 1);
-        completeParams.leftMargin = dp(8);
-        actions.addView(complete, completeParams);
-        card.addView(actions, actionsParams);
-
-        dialog.setContentView(card);
-        dialog.show();
-        styleCenteredDialog(dialog, 0.92f, 440);
-    }
-
-    private void confirmDelete(Assignment assignment, Dialog parentDialog) {
-        Dialog confirm = new Dialog(this);
-        confirm.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(22), dp(22), dp(22), dp(22));
-        card.setBackground(roundRect(color(R.color.surface_primary), 0, dp(26)));
-        card.addView(text("정말로 삭제하시겠습니까?", 20, color(R.color.text_primary), Typeface.BOLD));
-        TextView message = text("삭제한 수행평가는 다시 복구할 수 없습니다.", 14, color(R.color.text_secondary), Typeface.NORMAL);
-        message.setPadding(0, dp(10), 0, dp(20));
-        card.addView(message);
-        LinearLayout actions = row();
-        Button cancel = actionButton("취소", color(R.color.surface_soft), color(R.color.text_primary));
-        cancel.setOnClickListener(view -> confirm.dismiss());
-        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(52), 1));
-        Button delete = actionButton("삭제", color(R.color.danger), Color.WHITE);
-        delete.setOnClickListener(view -> {
-            assignments.remove(assignment);
-            saveAssignments();
-            refreshUi();
-            confirm.dismiss();
-            parentDialog.dismiss();
-        });
-        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(0, dp(52), 1);
-        deleteParams.leftMargin = dp(8);
-        actions.addView(delete, deleteParams);
-        card.addView(actions);
-        confirm.setContentView(card);
-        confirm.show();
-        styleCenteredDialog(confirm, 0.88f, 400);
-    }
-
-    private void editAssignment(Assignment assignment) {
-        editingAssignment = assignment;
-        titleInput.setText(assignment.title);
-        detailInput.setText(assignment.detail);
-        selectedPhotos.clear();
-        for (String photo : assignment.photos) {
-            selectedPhotos.add(Uri.parse(photo));
-        }
-        photoCountText.setText(selectedPhotos.isEmpty() ? "사진 중복 업로드 가능" : selectedPhotos.size() + "장 선택됨");
-        refreshPhotoPreview();
-        selectedDueDate.setTimeInMillis(assignment.dueMillis);
-        dueDateButton.setText(dateFormat.format(selectedDueDate.getTime()));
-        setSpinnerValue(periodSpinner, assignment.period);
-        if (!setSpinnerValue(subjectSpinner, assignment.subject)) {
-            setSpinnerValue(subjectSpinner, "직접 입력");
-            customSubjectInput.setText(assignment.subject);
-            customSubjectInput.setVisibility(View.VISIBLE);
-        }
-        if (formBody != null) {
-            formBody.setVisibility(View.VISIBLE);
-            formToggleButton.setText("접기");
-        }
-        scrollTo(formSection);
-        titleInput.requestFocus();
-    }
-
-    private void showNavigationMenu() {
-        Dialog dialog = new Dialog(this);
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        dialog.setCanceledOnTouchOutside(true);
-
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(24), dp(28), dp(24), dp(28));
-        panel.setBackground(sidePanelBackground());
-
-        LinearLayout head = row();
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text("메뉴", 24, color(R.color.text_primary), Typeface.BOLD);
-        head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ImageButton close = iconImageButton(R.drawable.ic_close, "메뉴 닫기", color(R.color.surface_soft), color(R.color.text_primary));
-        close.setOnClickListener(view -> dialog.dismiss());
-        head.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        panel.addView(head);
-
-        TextView mainLabel = eyebrow("주요 화면");
-        mainLabel.setPadding(0, dp(28), 0, dp(8));
-        panel.addView(mainLabel);
-        panel.addView(sideMenuButton(R.drawable.ic_week, "이번 주 수행평가", dialog, () -> scrollTo(calendarSection)));
-        panel.addView(sideMenuButton(R.drawable.ic_calendar, "캘린더 보기", dialog, () -> scrollTo(calendarSection)));
-
-        TextView settingLabel = eyebrow("설정");
-        settingLabel.setPadding(0, dp(24), 0, dp(8));
-        panel.addView(settingLabel);
-        panel.addView(sideMenuButton(R.drawable.ic_assignment, "수행평가 등록", dialog, this::openFormAndScroll));
-        panel.addView(sideMenuButton(R.drawable.ic_notifications, "알림 설정", dialog, this::openReminderAndScroll));
-
-        dialog.setContentView(panel);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            window.setGravity(Gravity.END);
-            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            WindowManager.LayoutParams attributes = window.getAttributes();
-            attributes.width = Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.86f), dp(360));
-            attributes.height = WindowManager.LayoutParams.MATCH_PARENT;
-            attributes.dimAmount = 0.42f;
-            attributes.windowAnimations = R.style.SidePanelAnimation;
-            window.setAttributes(attributes);
-        }
-        dialog.show();
-
-        if (window != null) {
-            window.setLayout(
-                Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.86f), dp(360)),
-                WindowManager.LayoutParams.MATCH_PARENT
-            );
-        }
-    }
-
-    private Button sideMenuButton(int iconRes, String value, Dialog dialog, Runnable action) {
-        Button button = new Button(this);
-        button.setText(value);
-        button.setTextColor(color(R.color.text_primary));
-        button.setTextSize(15);
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setAllCaps(false);
-        button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        button.setPadding(dp(18), 0, dp(18), 0);
-        button.setCompoundDrawablesWithIntrinsicBounds(tintedDrawable(iconRes, color(R.color.text_primary)), null, null, null);
-        button.setCompoundDrawablePadding(dp(12));
-        button.setBackground(pill(color(R.color.surface_soft), 0));
-        button.setOnClickListener(view -> {
-            dialog.dismiss();
-            rootScrollView.postDelayed(action, 180);
-        });
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(52)
-        );
-        params.bottomMargin = dp(8);
-        button.setLayoutParams(params);
-        return button;
-    }
-
-    private void openFormAndScroll() {
-        if (formBody != null) {
-            formBody.setVisibility(View.VISIBLE);
-            formToggleButton.setText("접기");
-        }
-        scrollTo(formSection);
-    }
-
-    private void openReminderAndScroll() {
-        if (reminderBody != null) {
-            reminderBody.setVisibility(View.VISIBLE);
-            reminderToggleButton.setText("접기");
-        }
-        scrollTo(reminderSection);
-    }
-
-    private void scrollTo(View target) {
-        if (target == null || rootScrollView == null) {
-            return;
-        }
-        rootScrollView.post(() -> rootScrollView.smoothScrollTo(0, Math.max(0, target.getTop() - dp(12))));
-    }
-
-    private void openPhoto(Uri uri) {
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.setDataAndType(uri, "image/*");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        try {
-            startActivity(intent);
-        } catch (Exception exception) {
-            Toast.makeText(this, "사진을 열 수 없습니다", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void clearForm() {
-        titleInput.setText("");
-        detailInput.setText("");
-        customSubjectInput.setText("");
-        customSubjectInput.setVisibility(View.GONE);
-        subjectSpinner.setSelection(0);
-        periodSpinner.setSelection(0);
-        subjectErrorText.setVisibility(View.GONE);
-        periodErrorText.setVisibility(View.GONE);
-        selectedPhotos.clear();
-        selectedDueDate = startOfToday();
-        photoCountText.setText("사진 중복 업로드 가능");
-        refreshPhotoPreview();
-    }
-
-    private void refreshReminderSummary() {
-        if (!prefs.contains(KEY_REMINDER_DAYS) && !prefs.contains(KEY_REMINDER_TIME)) {
-            reminderSummary.setText("설정된 알림이 없습니다");
-            return;
-        }
-        String day = reminderDaySpinner.getItemAtPosition(prefs.getInt(KEY_REMINDER_DAYS, 0)).toString();
-        String time = prefs.getString(KEY_REMINDER_TIME, "시간 미선택");
-        reminderSummary.setText(day + " · " + time);
-    }
-
-    private void loadAssignments() {
-        assignments.clear();
-        try {
+        dday.setPadding(dp(12), dp(6), dp�~�����k�w��`       try {
             JSONArray array = new JSONArray(prefs.getString(KEY_ASSIGNMENTS, "[]"));
             for (int i = 0; i < array.length(); i++) {
                 assignments.add(Assignment.fromJson(array.getJSONObject(i)));
@@ -1475,8 +1505,7 @@ public class MainActivity extends Activity {
         button.setTextColor(Color.WHITE);
         button.setTextSize(16);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setAllCaps(false);
-        button.setMinHeight(dp(52));
+        styleAppButton(button, dp(52));
         button.setBackground(pill(color(R.color.charcoal), 0));
         return button;
     }
@@ -1487,8 +1516,7 @@ public class MainActivity extends Activity {
         button.setTextColor(color(R.color.text_primary));
         button.setTextSize(14);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setAllCaps(false);
-        button.setMinHeight(dp(48));
+        styleAppButton(button, dp(50));
         button.setBackground(pill(color(R.color.surface_soft), 0));
         return button;
     }
@@ -1502,8 +1530,8 @@ public class MainActivity extends Activity {
     private Button compactButton(String value) {
         Button button = secondaryButton(value);
         button.setMinWidth(dp(72));
-        button.setMinimumHeight(dp(48));
-        button.setPadding(dp(16), 0, dp(16), 0);
+        styleAppButton(button, dp(50));
+        button.setPadding(dp(16), dp(2), dp(16), dp(3));
         button.setBackground(pill(color(R.color.lavender_soft), 0));
         return button;
     }
@@ -1521,16 +1549,83 @@ public class MainActivity extends Activity {
         return button;
     }
 
+    private TextView photoRemoveButton() {
+        TextView button = new TextView(this);
+        button.setText("×");
+        button.setTextSize(16);
+        button.setTextColor(Color.WHITE);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setGravity(Gravity.CENTER);
+        button.setIncludeFontPadding(false);
+        button.setContentDescription("첨부사진 삭제");
+        button.setMinimumWidth(0);
+        button.setMinimumHeight(0);
+        button.setClickable(true);
+        button.setFocusable(true);
+        button.setBackground(circle(color(R.color.danger)));
+        button.setElevation(dp(1));
+        return button;
+    }
+
+    private TextView closeIconButton(String description, int backgroundColor, int iconColor) {
+        TextView button = new TextView(this);
+        button.setText("×");
+        button.setTextSize(20);
+        button.setTextColor(iconColor);
+        button.setTypeface(Typeface.DEFAULT, Typeface.NORMAL);
+        button.setGravity(Gravity.CENTER);
+        button.setIncludeFontPadding(false);
+        button.setContentDescription(description);
+        button.setMinimumWidth(0);
+        button.setMinimumHeight(0);
+        button.setClickable(true);
+        button.setFocusable(true);
+        button.setBackground(circle(backgroundColor));
+        button.setElevation(dp(1));
+        return button;
+    }
+
+    private FrameLayout closeButtonTarget(String description, int backgroundColor, int iconColor) {
+        return iconTouchTarget(closeIconButton(description, backgroundColor, iconColor), dp(34), description);
+    }
+
+    private FrameLayout iconTouchTarget(View visual, int visualSize, String description) {
+        FrameLayout target = new FrameLayout(this);
+        target.setContentDescription(description);
+        target.setClickable(true);
+        target.setFocusable(true);
+        target.setMinimumWidth(dp(48));
+        target.setMinimumHeight(dp(48));
+        visual.setClickable(false);
+        visual.setFocusable(false);
+        FrameLayout.LayoutParams visualParams = new FrameLayout.LayoutParams(visualSize, visualSize);
+        visualParams.gravity = Gravity.CENTER;
+        target.addView(visual, visualParams);
+        return target;
+    }
+
     private Button actionButton(String value, int backgroundColor, int textColor) {
         Button button = new Button(this);
         button.setText(value);
         button.setTextColor(textColor);
         button.setTextSize(14);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setAllCaps(false);
-        button.setMinHeight(dp(52));
+        styleAppButton(button, dp(52));
         button.setBackground(pill(backgroundColor, 0));
         return button;
+    }
+
+    private void styleAppButton(Button button, int minHeight) {
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER);
+        button.setIncludeFontPadding(false);
+        button.setMinHeight(minHeight);
+        button.setMinimumHeight(minHeight);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setPadding(dp(16), dp(2), dp(16), dp(3));
+        button.setElevation(0);
+        button.setStateListAnimator(null);
     }
 
     private LinearLayout row() {
@@ -1606,6 +1701,10 @@ public class MainActivity extends Activity {
     }
 
     private void styleCenteredDialog(Dialog dialog, float widthFraction, int maxWidthDp) {
+        styleCenteredDialog(dialog, widthFraction, maxWidthDp, 0f);
+    }
+
+    private void styleCenteredDialog(Dialog dialog, float widthFraction, int maxWidthDp, float heightFraction) {
         Window window = dialog.getWindow();
         if (window == null) {
             return;
@@ -1617,7 +1716,10 @@ public class MainActivity extends Activity {
         attributes.dimAmount = 0.42f;
         window.setAttributes(attributes);
         int width = Math.min((int) (getResources().getDisplayMetrics().widthPixels * widthFraction), dp(maxWidthDp));
-        window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
+        int height = heightFraction > 0f
+            ? (int) (getResources().getDisplayMetrics().heightPixels * heightFraction)
+            : WindowManager.LayoutParams.WRAP_CONTENT;
+        window.setLayout(width, height);
     }
 
     private int color(int resourceId) {
@@ -1626,6 +1728,21 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private static class MaxHeightScrollView extends ScrollView {
+        private final int maxHeight;
+
+        MaxHeightScrollView(Context context, int maxHeight) {
+            super(context);
+            this.maxHeight = maxHeight;
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            int cappedHeightSpec = MeasureSpec.makeMeasureSpec(maxHeight, MeasureSpec.AT_MOST);
+            super.onMeasure(widthMeasureSpec, cappedHeightSpec);
+        }
     }
 
     private static class Assignment {

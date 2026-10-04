@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "1022914312803",
+    "project_id": "project-771b5",
+    "storage_bucket": "project-771b5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1022914312803:android:f1222903c19c1894cc9656",
+        "android_client_info": {
+          "package_name": "com.reportcalendar.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1022914312803-k2laeelrh56gvi5496tb8tci7osnb5dk.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.reportcalendar.app",
+            "certificate_hash": "d98ec9db50def2497ec0b2928b6e2c634629a0ba"
+          }
+        },
+        {
+          "client_id": "1022914312803-r2ao8gh276p1ik0l5k7nbrm0pg7n2vhj.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.reportcalendar.app",
+            "certificate_hash": "b9efbfe923d955481f4eb47fb8d8d986e0053ecb"
+          }
+        },
+        {
+          "client_id": "1022914312803-ekaljkbsmesvpr0s9sin19r2bppfg50h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB_wdol3sd6Uo3HtX-xC1HjBGDIm4tHt8M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1022914312803-ekaljkbsmesvpr0s9sin19r2bppfg50h.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
