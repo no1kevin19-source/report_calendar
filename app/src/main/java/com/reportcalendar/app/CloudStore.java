@@ -3,56 +3,82 @@ package com.reportcalendar.app;
 import com.google.android.gms.tasks.Task;
 import com.google.android.gms.tasks.Tasks;
 import com.google.firebase.FirebaseApp;
-import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.auth.*;
 import com.google.firebase.firestore.*;
 import java.util.*;
 
-/** User profiles only; no schedule data or credentials are uploaded. */
+/** User profiles only. Transactions avoid offline writes reviving a deleted profile. */
 final class CloudStore {
-    private static final Set<String> deletingUsers = new HashSet<>();
-
-    static Task<Void> saveProfile(FirebaseApp app, FirebaseUser user) {
-        if (deletingUsers.contains(user.getUid())) {
-            return Tasks.forException(new IllegalStateException("Account deletion in progress"));
-        }
-        Map<String, Object> profile = new HashMap<>();
-        profile.put("uid", user.getUid());
-        profile.put("email", user.getEmail() == null ? "" : user.getEmail());
-        profile.put("displayName", user.getDisplayName() == null ? "" : user.getDisplayName());
-        profile.put("updatedAt", FieldValue.serverTimestamp());
-        // The Authentication UID is the document ID: retries update one document, never add one.
-        return FirebaseFirestore.getInstance(app).collection("users").document(user.getUid())
-            .set(profile, SetOptions.merge());
-    }
-
-    static Task<Void> deleteAccount(FirebaseUser user) {
+    private static final Map<String, List<Task<Void>>> writes = new HashMap<>();
+    static synchronized Task<Void> saveProfile(FirebaseApp app, FirebaseUser user) {
         String uid = user.getUid();
-        if (!deletingUsers.add(uid)) {
-            return Tasks.forException(new IllegalStateException("Account deletion in progress"));
-        }
-        FirebaseApp app = FirebaseApp.getInstance();
+        if (uid.equals(DeletionJournal.pendingUid(app.getApplicationContext())))
+            return Tasks.forException(new IllegalStateException("Deletion requires reconciliation"));
+        Task<Void> task = writeProfile(app, user, false);
+        if (!writes.containsKey(uid)) writes.put(uid, new ArrayList<>());
+        writes.get(uid).add(task);
+        task.addOnCompleteListener(done -> {
+            synchronized (CloudStore.class) {
+                List<Task<Void>> pending = writes.get(uid);
+                if (pending != null) { pending.remove(task); if (pending.isEmpty()) writes.remove(uid); }
+            }
+        });
+        return task;
+    }
+    private static Task<Void> writeProfile(FirebaseApp app, FirebaseUser user, boolean recovery) {
         FirebaseFirestore db = FirebaseFirestore.getInstance(app);
-        DocumentReference profile = db.collection("users").document(uid);
-        // A transaction requires a server connection. Do not queue an offline deletion and
-        // then sign out before Firestore has acknowledged it.
-        Task<Void> cleanup = db.<Void>runTransaction(transaction -> {
-            transaction.get(profile);
-            transaction.delete(profile);
+        DocumentReference ref = db.collection("users").document(user.getUid());
+        Map<String, Object> fields = new HashMap<>();
+        fields.put("uid", user.getUid());
+        fields.put("email", user.getEmail() == null ? "" : user.getEmail());
+        fields.put("displayName", user.getDisplayName() == null ? "" : user.getDisplayName());
+        fields.put("updatedAt", FieldValue.serverTimestamp());
+        return db.runTransaction(tx -> {
+            if (!recovery && user.getUid().equals(DeletionJournal.pendingUid(app.getApplicationContext())))
+                throw new IllegalStateException("Deletion requires reconciliation");
+            tx.get(ref);
+            tx.set(ref, fields, SetOptions.merge());
             return null;
         });
-        return cleanup.continueWithTask(removed -> {
-            if (!removed.isSuccessful()) return Tasks.<Void>forException(removed.getException());
-            return user.delete().continueWithTask(deleted -> {
-                if (deleted.isSuccessful()) return Tasks.<Void>forResult(null);
-                Exception failure = deleted.getException();
-                // If Firebase rejected account deletion, restore its profile only after
-                // confirming that the account still exists. Never revive a deleted account.
-                return user.reload().continueWithTask(reloaded -> {
-                    if (!reloaded.isSuccessful()) return Tasks.<Void>forException(failure);
-                    deletingUsers.remove(uid);
-                    return saveProfile(app, user).continueWithTask(restored -> Tasks.<Void>forException(failure));
-                });
-            });
-        }).addOnCompleteListener(result -> deletingUsers.remove(uid));
+    }
+    static AccountDeletionFlow.Backend deletionBackend(FirebaseUser user) {
+        FirebaseApp app = FirebaseApp.getInstance();
+        FirebaseFirestore db = FirebaseFirestore.getInstance(app);
+        DocumentReference ref = db.collection("users").document(user.getUid());
+        return new AccountDeletionFlow.Backend() {
+            public void removeProfile(AccountDeletionFlow.Reply reply) {
+                List<Task<Void>> pending;
+                synchronized (CloudStore.class) {
+                    List<Task<Void>> existing = writes.get(user.getUid());
+                    pending = existing == null ? new ArrayList<>() : new ArrayList<>(existing);
+                }
+                // Drain already-dispatched profile writes before deleting the document.
+                Tasks.whenAllComplete(pending).continueWithTask(ignored -> db.<Void>runTransaction(tx -> {
+                    tx.get(ref); tx.delete(ref); return null;
+                })).addOnCompleteListener(task -> reply.done(task.isSuccessful()
+                    ? AccountDeletionFlow.Result.OK : AccountDeletionFlow.Result.UNKNOWN));
+            }
+            public void removeIdentity(AccountDeletionFlow.Reply reply) {
+                user.delete().addOnCompleteListener(task -> reply.done(task.isSuccessful()
+                    ? AccountDeletionFlow.Result.OK : classify(task.getException(), true)));
+            }
+            public void verifyIdentity(AccountDeletionFlow.Reply reply) {
+                user.reload().addOnCompleteListener(task -> reply.done(task.isSuccessful()
+                    ? AccountDeletionFlow.Result.OK : classify(task.getException(), false)));
+            }
+            public void restoreProfile(AccountDeletionFlow.Reply reply) {
+                writeProfile(app, user, true).addOnCompleteListener(task -> reply.done(task.isSuccessful()
+                    ? AccountDeletionFlow.Result.OK : AccountDeletionFlow.Result.UNKNOWN));
+            }
+        };
+    }
+    private static AccountDeletionFlow.Result classify(Exception error, boolean deleting) {
+        if (error instanceof FirebaseAuthException) {
+            String code = ((FirebaseAuthException) error).getErrorCode();
+            if ("ERROR_USER_NOT_FOUND".equals(code)) return AccountDeletionFlow.Result.ABSENT;
+            if (deleting && "ERROR_REQUIRES_RECENT_LOGIN".equals(code)) return AccountDeletionFlow.Result.REJECTED;
+        }
+        // Invalid tokens, disabled users and network failures are NOT proof of deletion.
+        return AccountDeletionFlow.Result.UNKNOWN;
     }
 }

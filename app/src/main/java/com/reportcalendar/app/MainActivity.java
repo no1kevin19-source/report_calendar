@@ -164,6 +164,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        AuthController.get(this).foreground();
         long todayMillis = startOfToday().getTimeInMillis();
         if (lastTodayMillis != 0 && todayMillis != lastTodayMillis) {
             lastTodayMillis = todayMillis;
@@ -1250,7 +1251,623 @@ public class MainActivity extends Activity {
         detailContent.addView(meta);
 
         TextView dday = text(dDayText(assignment.dueMillis), 13, color(R.color.text_primary), Typeface.BOLD);
-        dday.setPadding(dp(12), dp(6), dp�~�����k�w��`       try {
+        dday.setPadding(dp(12), dp(6), dp(12), dp(6));
+        dday.setBackground(pill(assignment.complete ? color(R.color.completed) : color(R.color.butter_yellow), 0));
+        LinearLayout.LayoutParams ddayParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ddayParams.topMargin = dp(14);
+        detailContent.addView(dday, ddayParams);
+
+        if (!assignment.detail.isEmpty()) {
+            TextView detailLabel = eyebrow("세부 내용");
+            detailLabel.setPadding(0, dp(20), 0, dp(8));
+            detailContent.addView(detailLabel);
+            TextView detail = text(assignment.detail, 15, color(R.color.text_primary), Typeface.NORMAL);
+            detail.setPadding(dp(16), dp(14), dp(16), dp(14));
+            detail.setBackground(roundRect(color(R.color.surface_soft), 0, dp(18)));
+            detailContent.addView(detail);
+        }
+
+        if (!assignment.photos.isEmpty()) {
+            TextView photoLabel = eyebrow("첨부사진");
+            photoLabel.setPadding(0, dp(20), 0, dp(8));
+            detailContent.addView(photoLabel);
+            HorizontalScrollView scroll = new HorizontalScrollView(this);
+            scroll.setHorizontalScrollBarEnabled(false);
+            LinearLayout photos = row();
+            for (String photo : assignment.photos) {
+                ImageView image = new ImageView(this);
+                image.setImageURI(Uri.parse(photo));
+                image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                image.setContentDescription("첨부사진 크게 보기");
+                image.setBackground(roundRect(color(R.color.surface_soft), 0, dp(16)));
+                image.setClipToOutline(true);
+                image.setOnClickListener(view -> openPhoto(Uri.parse(photo)));
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(92), dp(92));
+                params.rightMargin = dp(8);
+                photos.addView(image, params);
+            }
+            scroll.addView(photos);
+            detailContent.addView(scroll);
+        }
+
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        scrollParams.topMargin = dp(6);
+        card.addView(detailScroll, scrollParams);
+
+        LinearLayout actions = row();
+        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        actionsParams.topMargin = dp(22);
+        Button delete = actionButton("삭제", color(R.color.danger_soft), color(R.color.danger));
+        delete.setOnClickListener(view -> confirmDelete(assignment, dialog));
+        actions.addView(delete, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button edit = actionButton("수정", color(R.color.lavender_soft), color(R.color.text_primary));
+        edit.setOnClickListener(view -> {
+            dialog.dismiss();
+            editAssignment(assignment);
+        });
+        LinearLayout.LayoutParams editParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        editParams.leftMargin = dp(8);
+        actions.addView(edit, editParams);
+        Button complete = actionButton(assignment.complete ? "미완료로 변경" : "완료로 변경", color(R.color.charcoal), Color.WHITE);
+        complete.setTextSize(assignment.complete ? 12 : 13);
+        complete.setOnClickListener(view -> {
+            assignment.complete = !assignment.complete;
+            saveAssignments();
+            refreshUi();
+            dialog.dismiss();
+        });
+        LinearLayout.LayoutParams completeParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        completeParams.leftMargin = dp(8);
+        actions.addView(complete, completeParams);
+        card.addView(actions, actionsParams);
+
+        dialog.setContentView(card);
+        dialog.show();
+        styleCenteredDialog(dialog, 0.92f, 440);
+    }
+
+    private void confirmDelete(Assignment assignment, Dialog parentDialog) {
+        Dialog confirm = new Dialog(this);
+        confirm.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(22), dp(22), dp(22), dp(22));
+        card.setBackground(roundRect(color(R.color.surface_primary), 0, dp(26)));
+        card.addView(text("정말로 삭제하시겠습니까?", 20, color(R.color.text_primary), Typeface.BOLD));
+        TextView message = text("삭제한 수행평가는 다시 복구할 수 없습니다.", 14, color(R.color.text_secondary), Typeface.NORMAL);
+        message.setPadding(0, dp(10), 0, dp(20));
+        card.addView(message);
+        LinearLayout actions = row();
+        Button cancel = actionButton("취소", color(R.color.surface_soft), color(R.color.text_primary));
+        cancel.setOnClickListener(view -> confirm.dismiss());
+        actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(52), 1));
+        Button delete = actionButton("삭제", color(R.color.danger), Color.WHITE);
+        delete.setOnClickListener(view -> {
+            assignments.remove(assignment);
+            saveAssignments();
+            refreshUi();
+            confirm.dismiss();
+            parentDialog.dismiss();
+        });
+        LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(0, dp(52), 1);
+        deleteParams.leftMargin = dp(8);
+        actions.addView(delete, deleteParams);
+        card.addView(actions);
+        confirm.setContentView(card);
+        confirm.show();
+        styleCenteredDialog(confirm, 0.88f, 400);
+    }
+
+    private void editAssignment(Assignment assignment) {
+        Runnable loadEditForm = () -> loadAssignmentIntoForm(assignment);
+        if (hasDraftChanges() && (editingAssignmentId == null || !editingAssignmentId.equals(assignment.id))) {
+            showDiscardDraftDialog(loadEditForm);
+            return;
+        }
+        loadEditForm.run();
+    }
+
+    private void loadAssignmentIntoForm(Assignment assignment) {
+        editingAssignment = assignment;
+        editingAssignmentId = assignment.id;
+        titleInput.setText(assignment.title);
+        detailInput.setText(assignment.detail);
+        selectedPhotos.clear();
+        for (String photo : assignment.photos) {
+            selectedPhotos.add(Uri.parse(photo));
+        }
+        refreshPhotoStatusText();
+        refreshPhotoPreview();
+        selectedDueDate.setTimeInMillis(assignment.dueMillis);
+        dueDateButton.setText(dateFormat.format(selectedDueDate.getTime()));
+        setSpinnerValue(periodSpinner, assignment.period);
+        if (!setSpinnerValue(subjectSpinner, assignment.subject)) {
+            setSpinnerValue(subjectSpinner, "직접 입력");
+            customSubjectInput.setText(assignment.subject);
+            customSubjectInput.setVisibility(View.VISIBLE);
+        }
+        if (formBody != null) {
+            formBody.setVisibility(View.VISIBLE);
+            formToggleButton.setText("접기");
+        }
+        updateFormMode();
+        scrollTo(formSection);
+        titleInput.requestFocus();
+    }
+
+    private void showNavigationMenu() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(24), dp(28), dp(24), dp(28));
+        panel.setBackground(sidePanelBackground());
+
+        LinearLayout head = row();
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text("메뉴", 24, color(R.color.text_primary), Typeface.BOLD);
+        head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        FrameLayout close = closeButtonTarget("메뉴 닫기", color(R.color.surface_soft), color(R.color.text_primary));
+        close.setOnClickListener(view -> dialog.dismiss());
+        head.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        panel.addView(head);
+
+        TextView mainLabel = eyebrow("주요 화면");
+        mainLabel.setPadding(0, dp(28), 0, dp(8));
+        panel.addView(mainLabel);
+        panel.addView(sideMenuButton(R.drawable.ic_week, "이번 주 수행평가", dialog, () -> scrollTo(weekSection)));
+        panel.addView(sideMenuButton(R.drawable.ic_calendar, "캘린더 보기", dialog, () -> scrollTo(calendarSection)));
+
+        TextView settingLabel = eyebrow("설정");
+        settingLabel.setPadding(0, dp(24), 0, dp(8));
+        panel.addView(settingLabel);
+        panel.addView(sideMenuButton(R.drawable.ic_assignment, "수행평가 등록", dialog, this::openFormAndScroll));
+        panel.addView(sideMenuButton(R.drawable.ic_notifications, "알림 설정", dialog, this::openReminderAndScroll));
+        panel.addView(sideMenuButton(R.drawable.ic_assignment, "클라우드 데이터 가져오기", dialog, this::fetchAssignmentsFromFirestore));
+        FirebaseUser account = firebaseAuth.getCurrentUser();
+        boolean signedIn = account != null && !account.isAnonymous();
+        panel.addView(sideMenuButton(R.drawable.ic_assignment, signedIn ? "마이페이지" : "로그인", dialog,
+            () -> startActivity(new android.content.Intent(this, signedIn ? MyPageActivity.class : AuthActivity.class))));
+
+        dialog.setContentView(panel);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setGravity(Gravity.END);
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.width = Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.86f), dp(360));
+            attributes.height = WindowManager.LayoutParams.MATCH_PARENT;
+            attributes.dimAmount = 0.42f;
+            attributes.windowAnimations = R.style.SidePanelAnimation;
+            window.setAttributes(attributes);
+        }
+        dialog.show();
+
+        if (window != null) {
+            window.setLayout(
+                Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.86f), dp(360)),
+                WindowManager.LayoutParams.MATCH_PARENT
+            );
+        }
+    }
+
+    private Button sideMenuButton(int iconRes, String value, Dialog dialog, Runnable action) {
+        Button button = new Button(this);
+        button.setText(value);
+        button.setTextColor(color(R.color.text_primary));
+        button.setTextSize(15);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        button.setPadding(dp(18), 0, dp(18), 0);
+        button.setCompoundDrawablesWithIntrinsicBounds(tintedDrawable(iconRes, color(R.color.text_primary)), null, null, null);
+        button.setCompoundDrawablePadding(dp(12));
+        button.setBackground(pill(color(R.color.surface_soft), 0));
+        button.setOnClickListener(view -> {
+            dialog.dismiss();
+            rootScrollView.postDelayed(action, 180);
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(52)
+        );
+        params.bottomMargin = dp(8);
+        button.setLayoutParams(params);
+        return button;
+    }
+
+    private void openFormAndScroll() {
+        Runnable openNewForm = () -> {
+            editingAssignment = null;
+            editingAssignmentId = null;
+            clearForm();
+            updateFormMode();
+            showFormBody();
+            scrollTo(formSection);
+        };
+        if (hasDraftChanges()) {
+            showDiscardDraftDialog(openNewForm);
+            return;
+        }
+        openNewForm.run();
+    }
+
+    private void showFormBody() {
+        if (formBody != null) {
+            formBody.setVisibility(View.VISIBLE);
+            formToggleButton.setText("접기");
+        }
+    }
+
+    private void openReminderAndScroll() {
+        if (reminderBody != null) {
+            reminderBody.setVisibility(View.VISIBLE);
+            reminderToggleButton.setText("접기");
+        }
+        scrollTo(reminderSection);
+    }
+
+    private void scrollTo(View target) {
+        if (target == null || rootScrollView == null) {
+            return;
+        }
+        rootScrollView.post(() -> rootScrollView.smoothScrollTo(0, Math.max(0, target.getTop() - dp(12))));
+    }
+
+    private void openPhoto(Uri uri) {
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, "image/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(intent);
+        } catch (Exception exception) {
+            Toast.makeText(this, "사진을 열 수 없습니다", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void clearForm() {
+        titleInput.setText("");
+        detailInput.setText("");
+        customSubjectInput.setText("");
+        customSubjectInput.setVisibility(View.GONE);
+        subjectSpinner.setSelection(0);
+        periodSpinner.setSelection(0);
+        subjectErrorText.setVisibility(View.GONE);
+        periodErrorText.setVisibility(View.GONE);
+        selectedPhotos.clear();
+        selectedDueDate = startOfToday();
+        refreshPhotoStatusText();
+        refreshPhotoPreview();
+    }
+
+    private void cancelFormEditing() {
+        Runnable cancel = () -> {
+            editingAssignment = null;
+            editingAssignmentId = null;
+            clearForm();
+            updateFormMode();
+            Toast.makeText(this, "수정을 취소했습니다", Toast.LENGTH_SHORT).show();
+        };
+        if (hasDraftChanges()) {
+            showDiscardDraftDialog(cancel);
+        } else {
+            cancel.run();
+        }
+    }
+
+    private void updateFormMode() {
+        boolean editing = editingAssignmentId != null;
+        if (formHeading != null) {
+            formHeading.setText(editing ? "수행평가 수정" : "수행평가 등록");
+        }
+        if (formSaveButton != null) {
+            formSaveButton.setText(editing ? "수정 저장" : "등록하기");
+        }
+        if (formCancelButton != null) {
+            formCancelButton.setVisibility(editing ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    private boolean hasDraftChanges() {
+        if (titleInput == null || detailInput == null || subjectSpinner == null || periodSpinner == null) {
+            return false;
+        }
+        if (editingAssignmentId != null) {
+            Assignment original = findAssignmentById(editingAssignmentId);
+            if (original == null) {
+                return true;
+            }
+            return !original.title.equals(titleInput.getText().toString().trim())
+                || !original.detail.equals(detailInput.getText().toString().trim())
+                || !original.subject.equals(currentSubjectFromForm())
+                || !original.period.equals(periodSpinner.getSelectedItem().toString())
+                || original.dueMillis != selectedDueDate.getTimeInMillis()
+                || !samePhotos(original.photos, selectedPhotos);
+        }
+        boolean dueDateChanged = selectedDueDate != null && !sameDay(selectedDueDate.getTimeInMillis(), startOfToday().getTimeInMillis());
+        return titleInput.getText().toString().trim().length() > 0
+            || detailInput.getText().toString().trim().length() > 0
+            || customSubjectInput.getText().toString().trim().length() > 0
+            || subjectSpinner.getSelectedItemPosition() != 0
+            || periodSpinner.getSelectedItemPosition() != 0
+            || !selectedPhotos.isEmpty()
+            || dueDateChanged;
+    }
+
+    private String currentSubjectFromForm() {
+        String subject = subjectSpinner.getSelectedItem().toString();
+        return "직접 입력".equals(subject) ? customSubjectInput.getText().toString().trim() : subject;
+    }
+
+    private boolean samePhotos(List<String> originalPhotos, List<Uri> currentPhotos) {
+        if (originalPhotos.size() != currentPhotos.size()) {
+            return false;
+        }
+        for (int i = 0; i < originalPhotos.size(); i++) {
+            if (!originalPhotos.get(i).equals(currentPhotos.get(i).toString())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void showDiscardDraftDialog(Runnable onDiscard) {
+        Dialog confirm = new Dialog(this);
+        confirm.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(22), dp(22), dp(22), dp(22));
+        card.setBackground(roundRect(color(R.color.surface_primary), 0, dp(26)));
+        card.addView(text("작성 중인 내용을 버릴까요?", 20, color(R.color.text_primary), Typeface.BOLD));
+        TextView message = text("현재 입력하거나 수정 중인 내용은 저장되지 않습니다.", 14, color(R.color.text_secondary), Typeface.NORMAL);
+        message.setPadding(0, dp(10), 0, dp(20));
+        card.addView(message);
+        LinearLayout actions = row();
+        Button keep = actionButton("계속 작성", color(R.color.surface_soft), color(R.color.text_primary));
+        keep.setOnClickListener(view -> confirm.dismiss());
+        actions.addView(keep, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button discard = actionButton("버리기", color(R.color.danger), Color.WHITE);
+        discard.setOnClickListener(view -> {
+            confirm.dismiss();
+            onDiscard.run();
+        });
+        LinearLayout.LayoutParams discardParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        discardParams.leftMargin = dp(8);
+        actions.addView(discard, discardParams);
+        card.addView(actions);
+        confirm.setContentView(card);
+        confirm.show();
+        styleCenteredDialog(confirm, 0.88f, 400);
+    }
+
+    private void restoreTransientState(Bundle savedInstanceState) {
+        titleInput.setText(savedInstanceState.getString(STATE_TITLE, ""));
+        detailInput.setText(savedInstanceState.getString(STATE_DETAIL, ""));
+        customSubjectInput.setText(savedInstanceState.getString(STATE_CUSTOM_SUBJECT, ""));
+        subjectSpinner.setSelection(clampSpinnerIndex(subjectSpinner, savedInstanceState.getInt(STATE_SUBJECT_INDEX, 0)));
+        periodSpinner.setSelection(clampSpinnerIndex(periodSpinner, savedInstanceState.getInt(STATE_PERIOD_INDEX, 0)));
+        selectedDueDate.setTimeInMillis(savedInstanceState.getLong(STATE_DUE_MILLIS, startOfToday().getTimeInMillis()));
+        dueDateButton.setText(dateFormat.format(selectedDueDate.getTime()));
+
+        selectedPhotos.clear();
+        ArrayList<String> photoStrings = savedInstanceState.getStringArrayList(STATE_PHOTOS);
+        if (photoStrings != null) {
+            for (String photo : photoStrings) {
+                selectedPhotos.add(Uri.parse(photo));
+            }
+        }
+        refreshPhotoStatusText();
+        refreshPhotoPreview();
+
+        editingAssignmentId = savedInstanceState.getString(STATE_EDITING_ID);
+        editingAssignment = editingAssignmentId == null ? null : findAssignmentById(editingAssignmentId);
+        if (editingAssignmentId != null && editingAssignment == null) {
+            editingAssignmentId = null;
+        }
+
+        visibleMonth.setTimeInMillis(savedInstanceState.getLong(STATE_VISIBLE_MONTH, visibleMonth.getTimeInMillis()));
+        selectedCalendarDay.setTimeInMillis(savedInstanceState.getLong(STATE_SELECTED_DAY, selectedCalendarDay.getTimeInMillis()));
+        reminderDraftDays = savedInstanceState.getInt(STATE_REMINDER_DRAFT_DAYS, prefs.getInt(KEY_REMINDER_DAYS, 0));
+        reminderDraftTime = savedInstanceState.getString(STATE_REMINDER_DRAFT_TIME, prefs.getString(KEY_REMINDER_TIME, null));
+        reminderDaySpinner.setSelection(clampSpinnerIndex(reminderDaySpinner, reminderDraftDays));
+        updateReminderTimeButton();
+        updateFormMode();
+
+        if (savedInstanceState.getBoolean(STATE_FORM_VISIBLE, false)) {
+            showFormBody();
+        }
+        if (savedInstanceState.getBoolean(STATE_REMINDER_VISIBLE, false) && reminderBody != null) {
+            reminderBody.setVisibility(View.VISIBLE);
+            reminderToggleButton.setText("접기");
+        }
+    }
+
+    private int clampSpinnerIndex(Spinner spinner, int index) {
+        if (spinner == null || spinner.getCount() == 0) {
+            return 0;
+        }
+        return Math.max(0, Math.min(index, spinner.getCount() - 1));
+    }
+
+    private Assignment findAssignmentById(String id) {
+        if (id == null) {
+            return null;
+        }
+        for (Assignment assignment : assignments) {
+            if (id.equals(assignment.id)) {
+                return assignment;
+            }
+        }
+        return null;
+    }
+
+    private void loadReminderDraftFromSavedSettings() {
+        reminderDraftDays = prefs.getInt(KEY_REMINDER_DAYS, 0);
+        reminderDraftTime = prefs.getString(KEY_REMINDER_TIME, null);
+        if (reminderDaySpinner != null) {
+            reminderDaySpinner.setSelection(clampSpinnerIndex(reminderDaySpinner, reminderDraftDays));
+        }
+        updateReminderTimeButton();
+    }
+
+    private void updateReminderTimeButton() {
+        if (reminderTimeButton != null) {
+            reminderTimeButton.setText(reminderDraftTime == null || reminderDraftTime.isEmpty() ? "알림 시간 선택" : reminderDraftTime);
+        }
+    }
+
+    private void refreshReminderSummary() {
+        if (!prefs.contains(KEY_REMINDER_DAYS) && !prefs.contains(KEY_REMINDER_TIME)) {
+            reminderSummary.setText("저장된 알림 설정이 없습니다. 알림 발송은 아직 준비 중입니다.");
+            return;
+        }
+        String day = reminderDaySpinner.getItemAtPosition(prefs.getInt(KEY_REMINDER_DAYS, 0)).toString();
+        String time = prefs.getString(KEY_REMINDER_TIME, "시간 미선택");
+        reminderSummary.setText(day + " · " + time + " 저장됨 · 실제 알림 발송은 준비 중");
+    }
+
+    private void fetchAssignmentsFromFirestore() {
+        if (firestoreDb == null || firebaseAuth == null) {
+            Toast.makeText(this, "Firebase 초기화가 필요합니다", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(this, "클라우드 데이터를 가져오는 중입니다", Toast.LENGTH_SHORT).show();
+        FirebaseUser currentUser = firebaseAuth.getCurrentUser();
+        if (currentUser != null) {
+            fetchUserAssignmentsFromFirestore(currentUser.getUid());
+            return;
+        }
+        AuthController.get(this).signInGuest()
+            .addOnSuccessListener(this, authResult -> {
+                FirebaseUser user = authResult.getUser();
+                if (user == null) fetchRootAssignmentsFromFirestore();
+                else fetchUserAssignmentsFromFirestore(user.getUid());
+            })
+            .addOnFailureListener(this, exception -> fetchRootAssignmentsFromFirestore());
+    }
+
+    private void fetchUserAssignmentsFromFirestore(String uid) {
+        firestoreDb.collection(FIRESTORE_USERS_COLLECTION).document(uid)
+            .collection(FIRESTORE_ASSIGNMENTS_COLLECTION).get()
+            .addOnSuccessListener(querySnapshot -> {
+                if (querySnapshot.isEmpty()) fetchRootAssignmentsFromFirestore();
+                else mergeFirestoreAssignments(querySnapshot, "사용자 클라우드");
+            })
+            .addOnFailureListener(exception -> fetchRootAssignmentsFromFirestore());
+    }
+
+    private void fetchRootAssignmentsFromFirestore() {
+        firestoreDb.collection(FIRESTORE_ASSIGNMENTS_COLLECTION).get()
+            .addOnSuccessListener(querySnapshot -> {
+                if (querySnapshot.isEmpty()) {
+                    Toast.makeText(this, "Firestore에 가져올 수행평가가 없습니다", Toast.LENGTH_SHORT).show();
+                } else mergeFirestoreAssignments(querySnapshot, "클라우드");
+            })
+            .addOnFailureListener(exception ->
+                Toast.makeText(this, "Firestore 데이터를 가져오지 못했습니다", Toast.LENGTH_SHORT).show());
+    }
+
+    private void mergeFirestoreAssignments(QuerySnapshot querySnapshot, String sourceLabel) {
+        Map<String, Assignment> localById = new HashMap<>();
+        for (Assignment local : assignments) {
+            if (local.id != null && !local.id.isEmpty()) {
+                localById.put(local.id, local);
+            }
+        }
+
+        int added = 0;
+        int updated = 0;
+        for (DocumentSnapshot document : querySnapshot.getDocuments()) {
+            Assignment remote = assignmentFromDocument(document);
+            if (remote.title.isEmpty()) {
+                continue;
+            }
+            Assignment local = localById.get(remote.id);
+            if (local == null) {
+                assignments.add(remote);
+                localById.put(remote.id, remote);
+                added++;
+            } else {
+                copyAssignment(remote, local);
+                updated++;
+            }
+        }
+
+        saveAssignments();
+        refreshUi();
+        Toast.makeText(this, sourceLabel + "에서 " + added + "개 추가, " + updated + "개 갱신", Toast.LENGTH_SHORT).show();
+    }
+
+    private Assignment assignmentFromDocument(DocumentSnapshot document) {
+        Assignment assignment = new Assignment();
+        String id = document.getString("id");
+        assignment.id = id == null || id.isEmpty() ? document.getId() : id;
+        assignment.title = safeString(document.getString("title"));
+        assignment.subject = safeString(document.getString("subject"));
+        assignment.detail = safeString(document.getString("detail"));
+        assignment.period = safeString(document.getString("period"));
+        if (assignment.period.isEmpty()) {
+            assignment.period = "1교시";
+        }
+        assignment.dueMillis = readDueMillis(document);
+        Boolean complete = document.getBoolean("complete");
+        assignment.complete = complete != null && complete;
+
+        Object photos = document.get("photos");
+        if (photos instanceof List<?>) {
+            for (Object photo : (List<?>) photos) {
+                if (photo != null) {
+                    assignment.photos.add(photo.toString());
+                }
+            }
+        }
+        return assignment;
+    }
+
+    private long readDueMillis(DocumentSnapshot document) {
+        Object dueMillis = document.get("dueMillis");
+        if (dueMillis instanceof Number) {
+            return ((Number) dueMillis).longValue();
+        }
+        if (dueMillis instanceof Timestamp) {
+            return ((Timestamp) dueMillis).toDate().getTime();
+        }
+
+        Object dueDate = document.get("dueDate");
+        if (dueDate instanceof Number) {
+            return ((Number) dueDate).longValue();
+        }
+        if (dueDate instanceof Timestamp) {
+            return ((Timestamp) dueDate).toDate().getTime();
+        }
+        return startOfToday().getTimeInMillis();
+    }
+
+    private void copyAssignment(Assignment source, Assignment target) {
+        target.id = source.id;
+        target.title = source.title;
+        target.subject = source.subject;
+        target.detail = source.detail;
+        target.period = source.period;
+        target.dueMillis = source.dueMillis;
+        target.complete = source.complete;
+        target.photos.clear();
+        target.photos.addAll(source.photos);
+    }
+
+    private String safeString(String value) {
+        return value == null ? "" : value;
+    }
+
+    private void loadAssignments() {
+        assignments.clear();
+        try {
             JSONArray array = new JSONArray(prefs.getString(KEY_ASSIGNMENTS, "[]"));
             for (int i = 0; i < array.length(); i++) {
                 assignments.add(Assignment.fromJson(array.getJSONObject(i)));
