@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="account_accent">#6851B5</color>
+    <color name="account_soft">#F1EDFC</color>
+    <color name="account_blue">#285DE5</color>
+    <color name="account_muted">#666674</color>
     <color name="app_background">#F7F5FA</color>
     <color name="surface_primary">#FFFFFF</color>
     <color name="surface_soft">#F1EFF5</color>

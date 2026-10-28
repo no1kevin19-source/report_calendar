@@ -43,7 +43,7 @@ public class AccountDeletionFlowTest {
         Fixture f = new Fixture(); f.flow.delete(false); f.reply(OK); f.reply(REJECTED);
         assertEquals(RESTORE, f.stored);
         assertEquals("verify", f.calls.get(2));
-        assertTrue(f.message.contains("거절"));
+        assertTrue(f.message.contains("계정을 삭제할 수 없어"));
         f.reply(OK); assertEquals("restore", f.calls.get(3)); f.reply(OK);
         assertFalse(f.deleted); assertNull(f.stored);
     }
@@ -64,7 +64,7 @@ public class AccountDeletionFlowTest {
     @Test public void recoveryFailureIsVisibleAndJournalRetained() {
         Fixture f = new Fixture(); f.flow.delete(false); f.reply(OK); f.reply(REJECTED); f.reply(OK); f.reply(UNKNOWN);
         assertEquals(RESTORE, f.stored);
-        assertTrue(f.message.contains("복구도 확인하지 못"));
+        assertTrue(f.message.contains("내 정보 복구가 끝났는지 확인하지 못"));
     }
     @Test public void crashAfterAuthDispatchAndConfirmedAbsenceFinishes() {
         Fixture f = new Fixture(); f.stored = AUTH_DELETE; f.flow.reconcile(f.stored); f.reply(ABSENT);

@@ -51,7 +51,7 @@ import com.google.firebase.firestore.QuerySnapshot;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -64,7 +64,6 @@ public class MainActivity extends Activity {
     private static final String KEY_REMINDER_DAYS = "reminder_days";
     private static final String KEY_REMINDER_TIME = "reminder_time";
     private static final String FIRESTORE_ASSIGNMENTS_COLLECTION = "assignments";
-    private static final String FIRESTORE_USERS_COLLECTION = "users";
     private static final String STATE_TITLE = "state_title";
     private static final String STATE_SUBJECT_INDEX = "state_subject_index";
     private static final String STATE_CUSTOM_SUBJECT = "state_custom_subject";
@@ -113,11 +112,18 @@ public class MainActivity extends Activity {
     private HorizontalScrollView photoPreviewScroll;
     private LinearLayout photoPreviewList;
     private TextView reminderSummary;
+    private LinearLayout reminderSystemSettings;
+    private Button reminderMoreButton;
     private EditText titleInput;
     private EditText detailInput;
     private EditText customSubjectInput;
     private Spinner subjectSpinner;
     private Spinner periodSpinner;
+    private Spinner visibilitySpinner;
+    private TextView publicationStatus;
+    private final Runnable publicationObserver = () -> {
+        if (publicationStatus != null) publicationStatus.setText(AssignmentSync.get(this).status());
+    };
     private TextView subjectErrorText;
     private TextView periodErrorText;
     private Spinner reminderDaySpinner;
@@ -165,6 +171,10 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         AuthController.get(this).foreground();
+        AssignmentSync.get(this).observe(publicationObserver);
+        AssignmentSync.get(this).retry();
+        ReminderScheduler.reschedule(this);
+        refreshReminderSummary();
         long todayMillis = startOfToday().getTimeInMillis();
         if (lastTodayMillis != 0 && todayMillis != lastTodayMillis) {
             lastTodayMillis = todayMillis;
@@ -176,8 +186,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        AssignmentSync.get(this).unobserve(publicationObserver);
+        super.onPause();
+    }
+
+    @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
+        outState.putInt("state_visibility", visibilitySpinner.getSelectedItemPosition());
         outState.putString(STATE_TITLE, titleInput == null ? "" : titleInput.getText().toString());
         outState.putInt(STATE_SUBJECT_INDEX, subjectSpinner == null ? 0 : subjectSpinner.getSelectedItemPosition());
         outState.putString(STATE_CUSTOM_SUBJECT, customSubjectInput == null ? "" : customSubjectInput.getText().toString());
@@ -255,6 +272,20 @@ public class MainActivity extends Activity {
         titleParams.leftMargin = dp(14);
         header.addView(brandCopy, titleParams);
 
+        Button login = secondaryButton("로그인");
+        login.setContentDescription("로그인 화면 열기");
+        login.setSingleLine(true);
+        login.setPadding(dp(8), dp(4), dp(8), dp(4));
+        login.setMinWidth(dp(48));
+        login.setMinimumWidth(dp(48));
+        login.setBackground(pill(color(R.color.lavender_soft), 0));
+        login.setOnClickListener(view -> startActivity(new Intent(this, AuthActivity.class)));
+        LinearLayout.LayoutParams loginParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        loginParams.leftMargin = dp(8);
+        loginParams.rightMargin = dp(4);
+        header.addView(login, loginParams);
+
         ImageButton menu = iconImageButton(R.drawable.ic_menu, "메뉴 열기", color(R.color.surface_primary), color(R.color.text_primary));
         menu.setOnClickListener(view -> showNavigationMenu());
         header.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -317,7 +348,7 @@ public class MainActivity extends Activity {
             quickActionParams(0, dp(8))
         );
         quickActions.addView(
-            quickActionCard(R.drawable.ic_notifications, "알림 설정", "놓치지 않게 준비", color(R.color.surface_primary), color(R.color.text_primary), this::openReminderAndScroll),
+            quickActionCard(R.drawable.ic_notifications, "알림 설정", "마감 전에 알려드려요", color(R.color.surface_primary), color(R.color.text_primary), this::openReminderAndScroll),
             quickActionParams(dp(8), dp(8))
         );
 
@@ -397,6 +428,18 @@ public class MainActivity extends Activity {
         dueDateButton.setOnClickListener(view -> pickDate());
         formBody.addView(label("마감일"));
         formBody.addView(dueDateButton);
+
+        formBody.addView(label("공개 범위"));
+        visibilitySpinner = spinner(new String[]{"비공개 · 내 휴대폰에만 저장", "공개 · 로그인한 모든 사용자에게 보이기"});
+        formBody.addView(visibilitySpinner);
+        TextView sharingHelp = text("공개하면 로그인한 모든 사용자가 과제 내용과 완료 여부를 볼 수 있어요. 사진은 공유되지 않아요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        sharingHelp.setPadding(0, dp(8), 0, dp(12));
+        formBody.addView(sharingHelp);
+        publicationStatus = text("", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        formBody.addView(publicationStatus);
+        Button retryPublication = secondaryButton("공개 과제 저장·삭제 다시 시도");
+        retryPublication.setOnClickListener(view -> AssignmentSync.get(this).retry());
+        formBody.addView(retryPublication);
 
         Button photoButton = secondaryButton("사진 업로드");
         photoButton.setCompoundDrawablesWithIntrinsicBounds(tintedDrawable(R.drawable.ic_photo, color(R.color.text_primary)), null, null, null);
@@ -515,7 +558,7 @@ public class MainActivity extends Activity {
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.addView(text("다가오는 수행평가 알림", 19, color(R.color.text_primary), Typeface.BOLD));
-        TextView description = text("준비 중 · 현재는 설정만 저장되며 알림은 발송되지 않아요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        TextView description = text("마감 전에 휴대폰 알림으로 알려드려요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
         description.setPadding(0, dp(4), dp(8), 0);
         copy.addView(description);
         head.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -533,7 +576,7 @@ public class MainActivity extends Activity {
             reminderToggleButton.setText(opening ? "접기" : "열기");
         });
 
-        TextView preparing = text("준비 중", 12, color(R.color.text_primary), Typeface.BOLD);
+        TextView preparing = text("휴대폰 알림", 12, color(R.color.text_primary), Typeface.BOLD);
         preparing.setPadding(dp(10), dp(5), dp(10), dp(5));
         preparing.setBackground(pill(color(R.color.butter_yellow), 0));
         LinearLayout.LayoutParams preparingParams = new LinearLayout.LayoutParams(
@@ -543,7 +586,7 @@ public class MainActivity extends Activity {
         preparingParams.bottomMargin = dp(10);
         reminderBody.addView(preparing, preparingParams);
 
-        TextView notice = text("현재는 알림 기준과 시간만 저장돼요. 실제 알림 발송은 아직 준비 중입니다.", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        TextView notice = text("이 휴대폰에 저장된 미완료 과제를 선택한 날짜·시간에 한 번 알려드려요. 같은 시간의 과제는 한 알림으로 묶어요. 이미 지난 알림 시간은 건너뛰어요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
         notice.setPadding(dp(14), dp(12), dp(14), dp(12));
         notice.setBackground(roundRect(color(R.color.surface_soft), 0, dp(16)));
         reminderBody.addView(notice);
@@ -559,7 +602,7 @@ public class MainActivity extends Activity {
             public void onNothingSelected(AdapterView<?> parent) {
             }
         });
-        reminderBody.addView(label("알림 시작일"));
+        reminderBody.addView(label("마감 며칠 전에 받을까요?"));
         reminderBody.addView(reminderDaySpinner);
 
         reminderTimeButton = secondaryButton("알림 시간 선택");
@@ -568,16 +611,21 @@ public class MainActivity extends Activity {
         reminderBody.addView(reminderTimeButton);
 
         LinearLayout actions = row();
-        Button save = primaryButton("설정 저장");
+        Button save = primaryButton("알림 켜기·저장");
         save.setOnClickListener(view -> {
-            SharedPreferences.Editor editor = prefs.edit().putInt(KEY_REMINDER_DAYS, reminderDraftDays);
             if (reminderDraftTime == null || reminderDraftTime.isEmpty()) {
-                editor.remove(KEY_REMINDER_TIME);
-            } else {
-                editor.putString(KEY_REMINDER_TIME, reminderDraftTime);
+                Toast.makeText(this, "알림 시간을 먼저 선택해 주세요", Toast.LENGTH_SHORT).show();
+                return;
             }
-            editor.apply();
-            Toast.makeText(this, "설정이 저장되었어요", Toast.LENGTH_SHORT).show();
+            if (!prefs.edit().putInt(KEY_REMINDER_DAYS, reminderDraftDays)
+                    .putString(KEY_REMINDER_TIME, reminderDraftTime)
+                    .putBoolean(ReminderScheduler.ENABLED, true).commit()) {
+                Toast.makeText(this, "설정을 저장하지 못했어요. 저장 공간을 확인해 주세요", Toast.LENGTH_LONG).show();
+                return;
+            }
+            ReminderScheduler.reschedule(this);
+            requestReminderPermission();
+            Toast.makeText(this, "알림 설정을 저장했어요. 아래에서 알림 상태를 확인해 주세요", Toast.LENGTH_LONG).show();
             refreshReminderSummary();
         });
         actions.addView(save, new LinearLayout.LayoutParams(0, dp(52), 1));
@@ -585,7 +633,7 @@ public class MainActivity extends Activity {
         Button cancel = secondaryButton("취소");
         cancel.setOnClickListener(view -> {
             loadReminderDraftFromSavedSettings();
-            Toast.makeText(this, "저장 전 변경사항을 취소했습니다", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "변경을 취소했어요. 이전 설정을 유지해요.", Toast.LENGTH_SHORT).show();
             refreshReminderSummary();
         });
         LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(0, dp(52), 1);
@@ -599,8 +647,86 @@ public class MainActivity extends Activity {
         reminderBody.addView(actions, actionParams);
 
         reminderSummary = text("", 13, color(R.color.text_secondary), Typeface.NORMAL);
-        reminderSummary.setPadding(0, dp(10), 0, 0);
-        reminderBody.addView(reminderSummary);
+        reminderSummary.setPadding(dp(14), dp(12), dp(14), dp(12));
+        reminderSummary.setBackground(roundRect(color(R.color.lavender_soft), 0, dp(16)));
+        LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        summaryParams.topMargin = dp(16);
+        reminderBody.addView(reminderSummary, summaryParams);
+
+        // Keep frequent actions visible; system permissions are secondary, expandable controls.
+        LinearLayout utilityActions = row();
+        LinearLayout.LayoutParams utilityParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        utilityParams.topMargin = dp(16);
+        reminderBody.addView(utilityActions, utilityParams);
+        Button disable = secondaryButton("알림 끄기");
+        disable.setOnClickListener(v -> {
+            prefs.edit().putBoolean(ReminderScheduler.ENABLED, false).commit();
+            ReminderScheduler.reschedule(this);
+            getSystemService(android.app.NotificationManager.class).cancel(8202);
+            refreshReminderSummary();
+        });
+        Button test = outlinedButton("알림 테스트");
+        test.setContentDescription("테스트 알림 보내기");
+        test.setOnClickListener(v -> {
+            if (!ReminderScheduler.test(this)) requestReminderPermission();
+            else Toast.makeText(this, "휴대폰의 알림창을 확인해 주세요", Toast.LENGTH_SHORT).show();
+        });
+        utilityActions.addView(test, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        LinearLayout.LayoutParams disableParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        disableParams.leftMargin = dp(12);
+        utilityActions.addView(disable, disableParams);
+
+        LinearLayout systemSettings = new LinearLayout(this);
+        reminderSystemSettings = systemSettings;
+        systemSettings.setOrientation(LinearLayout.VERTICAL);
+        systemSettings.setPadding(dp(12), dp(12), dp(12), dp(12));
+        systemSettings.setBackground(roundRect(color(R.color.surface_soft), 0, dp(18)));
+        systemSettings.setVisibility(prefs.getBoolean(ReminderScheduler.ENABLED, false)
+            && !ReminderScheduler.allowed(this) ? View.VISIBLE : View.GONE);
+        Button more = outlinedButton(systemSettings.getVisibility() == View.VISIBLE ? "추가 설정 접기" : "추가 설정 보기");
+        reminderMoreButton = more;
+        more.setContentDescription("휴대폰 알림 권한과 정확한 시간 설정 "
+            + (systemSettings.getVisibility() == View.VISIBLE ? "접기" : "펼치기"));
+        more.setOnClickListener(v -> {
+            boolean opening = systemSettings.getVisibility() != View.VISIBLE;
+            systemSettings.setVisibility(opening ? View.VISIBLE : View.GONE);
+            more.setText(opening ? "추가 설정 접기" : "추가 설정 보기");
+            more.setContentDescription("휴대폰 알림 권한과 정확한 시간 설정 " + (opening ? "접기" : "펼치기"));
+        });
+        LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        moreParams.topMargin = dp(16);
+        reminderBody.addView(more, moreParams);
+        LinearLayout.LayoutParams systemParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        systemParams.topMargin = dp(12);
+        reminderBody.addView(systemSettings, systemParams);
+        TextView permissionHelp = text("알림이 안 오거나 늦게 올 때 확인해 주세요.", 13, color(R.color.text_secondary), Typeface.NORMAL);
+        permissionHelp.setPadding(dp(2), 0, dp(2), dp(12));
+        systemSettings.addView(permissionHelp);
+        Button permission = secondaryButton("휴대폰 알림 설정 열기");
+        permission.setBackground(pill(color(R.color.surface_primary), 0));
+        permission.setOnClickListener(v -> openNotificationSettings());
+        systemSettings.addView(permission, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            Button exact = secondaryButton("정확한 시간 알림 허용");
+            exact.setOnClickListener(v -> {
+                try {
+                    startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                        Uri.parse("package:" + getPackageName())));
+                } catch (android.content.ActivityNotFoundException e) {
+                    Toast.makeText(this, "휴대폰 설정에서 ‘알람 및 리마인더’를 확인해 주세요", Toast.LENGTH_LONG).show();
+                }
+            });
+            exact.setBackground(pill(color(R.color.surface_primary), 0));
+            LinearLayout.LayoutParams exactParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            exactParams.topMargin = dp(12);
+            systemSettings.addView(exact, exactParams);
+        }
         loadReminderDraftFromSavedSettings();
         panel.addView(reminderBody);
         return panel;
@@ -655,7 +781,7 @@ public class MainActivity extends Activity {
         boolean isNewAssignment = editingAssignmentId == null;
         if (isNewAssignment) {
             assignment = new Assignment();
-            assignment.id = String.valueOf(System.currentTimeMillis());
+            assignment.id = java.util.UUID.randomUUID().toString();
         } else {
             assignment = findAssignmentById(editingAssignmentId);
             if (assignment == null) {
@@ -666,6 +792,27 @@ public class MainActivity extends Activity {
                 return;
             }
         }
+        boolean publicSelected = visibilitySpinner.getSelectedItemPosition() == 1;
+        detachUnpublished(assignment);
+        FirebaseUser publisher = firebaseAuth.getCurrentUser();
+        if ((!assignment.cloudId.isEmpty() || publicSelected) &&
+                (publisher == null || publisher.isAnonymous()
+                 || !AssignmentPublication.canWrite(assignment.ownerUid, publisher.getUid())
+                 || publisher.getUid().equals(DeletionJournal.pendingUid(this)))) {
+            Toast.makeText(this, "공개 과제는 작성한 계정으로 로그인한 후 저장해 주세요", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (publicSelected) {
+            try {
+                AssignmentPublication.fields(assignment.id, publisher.getUid(), title, subject, period,
+                    detailInput.getText().toString().trim(), selectedDueDate.getTimeInMillis(), assignment.complete);
+            } catch (IllegalArgumentException error) {
+                Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show(); return;
+            }
+            if (assignment.cloudId.isEmpty()) assignment.cloudId = java.util.UUID.randomUUID().toString();
+            assignment.ownerUid = publisher.getUid();
+        }
+        assignment.isPublic = publicSelected;
         assignment.title = title;
         assignment.subject = subject;
         assignment.detail = detailInput.getText().toString().trim();
@@ -680,13 +827,17 @@ public class MainActivity extends Activity {
             assignments.add(assignment);
         }
 
+        if (!savePublication(assignment, false)) {
+            loadAssignments();
+            Toast.makeText(this, "저장하지 못했어요. 입력 내용은 유지되니 다시 시도해 주세요", Toast.LENGTH_LONG).show();
+            return;
+        }
         editingAssignment = null;
         editingAssignmentId = null;
-        saveAssignments();
         clearForm();
         updateFormMode();
         refreshUi();
-        Toast.makeText(this, "저장되었습니다", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, assignment.cloudId.isEmpty() ? "휴대폰에 저장했어요" : "휴대폰에 저장했어요. 공개 여부는 ‘공개 범위’ 아래 안내를 확인해 주세요", Toast.LENGTH_LONG).show();
     }
 
     private void pickDate() {
@@ -837,7 +988,7 @@ public class MainActivity extends Activity {
                 nearestUpcoming = assignment;
             }
         }
-        overdueItems.sort(Comparator.comparingLong(item -> item.dueMillis));
+        Collections.sort(overdueItems, (a, b) -> Long.compare(a.dueMillis, b.dueMillis));
 
         if (nearestUpcoming == null) {
             nearestText.setText("다가오는 수행평가가 없어요");
@@ -915,7 +1066,7 @@ public class MainActivity extends Activity {
                 weekItems.add(assignment);
             }
         }
-        weekItems.sort(Comparator.comparingLong(item -> item.dueMillis));
+        Collections.sort(weekItems, (a, b) -> Long.compare(a.dueMillis, b.dueMillis));
         resizeWeekList(weekItems.size());
 
         if (weekItems.isEmpty()) {
@@ -1314,14 +1465,28 @@ public class MainActivity extends Activity {
         Button complete = actionButton(assignment.complete ? "미완료로 변경" : "완료로 변경", color(R.color.charcoal), Color.WHITE);
         complete.setTextSize(assignment.complete ? 12 : 13);
         complete.setOnClickListener(view -> {
+            if (!canManagePublication(assignment)) return;
+            detachUnpublished(assignment);
             assignment.complete = !assignment.complete;
-            saveAssignments();
+            if (!savePublication(assignment, false)) {
+                loadAssignments();
+                Toast.makeText(this, "저장하지 못했어요", Toast.LENGTH_SHORT).show();
+            }
             refreshUi();
             dialog.dismiss();
         });
         LinearLayout.LayoutParams completeParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
         completeParams.leftMargin = dp(8);
         actions.addView(complete, completeParams);
+        if (!isLocalOnly(assignment) && !ownsPublication(assignment)) {
+            edit.setEnabled(false);
+            complete.setEnabled(false);
+            delete.setEnabled(false);
+        }
+        card.addView(text(assignment.isPublic ? "공개 과제 · 작성자만 수정할 수 있어요" : "비공개 과제 · 내 휴대폰에서만 보여요",
+            13, color(R.color.text_secondary), Typeface.NORMAL));
+        if (!assignment.cloudId.isEmpty() && AssignmentSync.get(this).hasPending(assignment.cloudId))
+            card.addView(text("변경 대기 중 · 다른 사람에게 이전 내용이 보일 수 있어요", 13, color(R.color.text_secondary), Typeface.NORMAL));
         card.addView(actions, actionsParams);
 
         dialog.setContentView(card);
@@ -1337,7 +1502,7 @@ public class MainActivity extends Activity {
         card.setPadding(dp(22), dp(22), dp(22), dp(22));
         card.setBackground(roundRect(color(R.color.surface_primary), 0, dp(26)));
         card.addView(text("정말로 삭제하시겠습니까?", 20, color(R.color.text_primary), Typeface.BOLD));
-        TextView message = text("삭제한 수행평가는 다시 복구할 수 없습니다.", 14, color(R.color.text_secondary), Typeface.NORMAL);
+        TextView message = text("삭제하면 되돌릴 수 없어요.", 14, color(R.color.text_secondary), Typeface.NORMAL);
         message.setPadding(0, dp(10), 0, dp(20));
         card.addView(message);
         LinearLayout actions = row();
@@ -1346,8 +1511,15 @@ public class MainActivity extends Activity {
         actions.addView(cancel, new LinearLayout.LayoutParams(0, dp(52), 1));
         Button delete = actionButton("삭제", color(R.color.danger), Color.WHITE);
         delete.setOnClickListener(view -> {
+            if (!canManagePublication(assignment)) return;
+            detachUnpublished(assignment);
             assignments.remove(assignment);
-            saveAssignments();
+            if (!savePublication(assignment, true)) {
+                loadAssignments();
+                Toast.makeText(this, "삭제하지 못했어요", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (!assignment.cloudId.isEmpty()) Toast.makeText(this, "공개 과제 삭제가 아직 끝나지 않았어요. ‘공개 범위’ 아래에서 확인해 주세요", Toast.LENGTH_LONG).show();
             refreshUi();
             confirm.dismiss();
             parentDialog.dismiss();
@@ -1362,6 +1534,7 @@ public class MainActivity extends Activity {
     }
 
     private void editAssignment(Assignment assignment) {
+        if (!canManagePublication(assignment)) return;
         Runnable loadEditForm = () -> loadAssignmentIntoForm(assignment);
         if (hasDraftChanges() && (editingAssignmentId == null || !editingAssignmentId.equals(assignment.id))) {
             showDiscardDraftDialog(loadEditForm);
@@ -1373,6 +1546,7 @@ public class MainActivity extends Activity {
     private void loadAssignmentIntoForm(Assignment assignment) {
         editingAssignment = assignment;
         editingAssignmentId = assignment.id;
+        visibilitySpinner.setSelection(assignment.isPublic ? 1 : 0);
         titleInput.setText(assignment.title);
         detailInput.setText(assignment.detail);
         selectedPhotos.clear();
@@ -1428,7 +1602,9 @@ public class MainActivity extends Activity {
         panel.addView(settingLabel);
         panel.addView(sideMenuButton(R.drawable.ic_assignment, "수행평가 등록", dialog, this::openFormAndScroll));
         panel.addView(sideMenuButton(R.drawable.ic_notifications, "알림 설정", dialog, this::openReminderAndScroll));
-        panel.addView(sideMenuButton(R.drawable.ic_assignment, "클라우드 데이터 가져오기", dialog, this::fetchAssignmentsFromFirestore));
+        panel.addView(sideMenuButton(R.drawable.ic_assignment, "공개 과제 가져오기", dialog, this::fetchAssignmentsFromFirestore));
+
+
         FirebaseUser account = firebaseAuth.getCurrentUser();
         boolean signedIn = account != null && !account.isAnonymous();
         panel.addView(sideMenuButton(R.drawable.ic_assignment, signedIn ? "마이페이지" : "로그인", dialog,
@@ -1538,6 +1714,7 @@ public class MainActivity extends Activity {
         customSubjectInput.setVisibility(View.GONE);
         subjectSpinner.setSelection(0);
         periodSpinner.setSelection(0);
+        visibilitySpinner.setSelection(0);
         subjectErrorText.setVisibility(View.GONE);
         periodErrorText.setVisibility(View.GONE);
         selectedPhotos.clear();
@@ -1552,7 +1729,7 @@ public class MainActivity extends Activity {
             editingAssignmentId = null;
             clearForm();
             updateFormMode();
-            Toast.makeText(this, "수정을 취소했습니다", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "수정을 취소했어요", Toast.LENGTH_SHORT).show();
         };
         if (hasDraftChanges()) {
             showDiscardDraftDialog(cancel);
@@ -1584,6 +1761,7 @@ public class MainActivity extends Activity {
                 return true;
             }
             return !original.title.equals(titleInput.getText().toString().trim())
+                || original.isPublic != (visibilitySpinner.getSelectedItemPosition() == 1)
                 || !original.detail.equals(detailInput.getText().toString().trim())
                 || !original.subject.equals(currentSubjectFromForm())
                 || !original.period.equals(periodSpinner.getSelectedItem().toString())
@@ -1592,6 +1770,7 @@ public class MainActivity extends Activity {
         }
         boolean dueDateChanged = selectedDueDate != null && !sameDay(selectedDueDate.getTimeInMillis(), startOfToday().getTimeInMillis());
         return titleInput.getText().toString().trim().length() > 0
+            || visibilitySpinner.getSelectedItemPosition() != 0
             || detailInput.getText().toString().trim().length() > 0
             || customSubjectInput.getText().toString().trim().length() > 0
             || subjectSpinner.getSelectedItemPosition() != 0
@@ -1625,7 +1804,7 @@ public class MainActivity extends Activity {
         card.setPadding(dp(22), dp(22), dp(22), dp(22));
         card.setBackground(roundRect(color(R.color.surface_primary), 0, dp(26)));
         card.addView(text("작성 중인 내용을 버릴까요?", 20, color(R.color.text_primary), Typeface.BOLD));
-        TextView message = text("현재 입력하거나 수정 중인 내용은 저장되지 않습니다.", 14, color(R.color.text_secondary), Typeface.NORMAL);
+        TextView message = text("지금 작성한 내용은 사라져요.", 14, color(R.color.text_secondary), Typeface.NORMAL);
         message.setPadding(0, dp(10), 0, dp(20));
         card.addView(message);
         LinearLayout actions = row();
@@ -1647,6 +1826,7 @@ public class MainActivity extends Activity {
     }
 
     private void restoreTransientState(Bundle savedInstanceState) {
+        visibilitySpinner.setSelection(savedInstanceState.getInt("state_visibility", 0) == 1 ? 1 : 0);
         titleInput.setText(savedInstanceState.getString(STATE_TITLE, ""));
         detailInput.setText(savedInstanceState.getString(STATE_DETAIL, ""));
         customSubjectInput.setText(savedInstanceState.getString(STATE_CUSTOM_SUBJECT, ""));
@@ -1723,61 +1903,90 @@ public class MainActivity extends Activity {
     }
 
     private void refreshReminderSummary() {
-        if (!prefs.contains(KEY_REMINDER_DAYS) && !prefs.contains(KEY_REMINDER_TIME)) {
-            reminderSummary.setText("저장된 알림 설정이 없습니다. 알림 발송은 아직 준비 중입니다.");
+        if (reminderSummary == null) return;
+        if (!prefs.getBoolean(ReminderScheduler.ENABLED, false)) {
+            reminderSummary.setText("알림이 꺼져 있어요. 날짜와 시간을 선택하고 ‘알림 켜기·저장’을 눌러 주세요.");
             return;
         }
-        String day = reminderDaySpinner.getItemAtPosition(prefs.getInt(KEY_REMINDER_DAYS, 0)).toString();
+        String day = reminderDaySpinner.getItemAtPosition(clampSpinnerIndex(reminderDaySpinner, prefs.getInt(KEY_REMINDER_DAYS, 0))).toString();
         String time = prefs.getString(KEY_REMINDER_TIME, "시간 미선택");
-        reminderSummary.setText(day + " · " + time + " 저장됨 · 실제 알림 발송은 준비 중");
+        if (!ReminderScheduler.allowed(this)) {
+            if (reminderSystemSettings != null && reminderMoreButton != null) {
+                reminderSystemSettings.setVisibility(View.VISIBLE);
+                reminderMoreButton.setText("추가 설정 접기");
+                reminderMoreButton.setContentDescription("휴대폰 알림 권한과 정확한 시간 설정 접기");
+            }
+            reminderSummary.setText(day + " · " + time + " 저장됨\n휴대폰에서 알림이 차단돼 있어요. ‘휴대폰 알림 설정 열기’에서 허용해 주세요.");
+            return;
+        }
+        long next = prefs.getLong(ReminderScheduler.PENDING, -1);
+        reminderSummary.setText(day + " · " + time + " 알림 켜짐\n"
+            + (next > 0 ? "다음 알림: " + new SimpleDateFormat("M월 d일 HH:mm", Locale.KOREAN).format(new java.util.Date(next))
+                : "지금은 알림을 보낼 과제가 없어요.")
+            + (ReminderScheduler.exact(this) ? "" : "\n절전 상태에서는 늦게 올 수 있어요. ‘추가 설정’에서 ‘정확한 시간 알림 허용’을 눌러 주세요."));
+    }
+
+    private void requestReminderPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 8205);
+        } else if (!ReminderScheduler.allowed(this)) openNotificationSettings();
+    }
+
+    private void openNotificationSettings() {
+        Intent settings = android.os.Build.VERSION.SDK_INT >= 26
+            ? new Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName())
+                .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, ReminderScheduler.CHANNEL)
+            : new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+        try { startActivity(settings); }
+        catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, "휴대폰 설정에서 앱 알림을 허용해 주세요", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == 8205) {
+            ReminderScheduler.reschedule(this);
+            refreshReminderSummary();
+            if (!ReminderScheduler.allowed(this)) Toast.makeText(this, "알림을 받으려면 휴대폰 설정에서 알림을 허용해 주세요", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void fetchAssignmentsFromFirestore() {
         if (firestoreDb == null || firebaseAuth == null) {
-            Toast.makeText(this, "Firebase 초기화가 필요합니다", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "아직 연결을 준비 중이에요. 잠시 후 다시 시도해 주세요", Toast.LENGTH_SHORT).show();
             return;
         }
-        Toast.makeText(this, "클라우드 데이터를 가져오는 중입니다", Toast.LENGTH_SHORT).show();
         FirebaseUser currentUser = firebaseAuth.getCurrentUser();
-        if (currentUser != null) {
-            fetchUserAssignmentsFromFirestore(currentUser.getUid());
+        if (currentUser == null || currentUser.isAnonymous()) {
+            Toast.makeText(this, "로그인 후 공개 과제를 가져올 수 있어요", Toast.LENGTH_SHORT).show();
             return;
         }
-        AuthController.get(this).signInGuest()
-            .addOnSuccessListener(this, authResult -> {
-                FirebaseUser user = authResult.getUser();
-                if (user == null) fetchRootAssignmentsFromFirestore();
-                else fetchUserAssignmentsFromFirestore(user.getUid());
-            })
-            .addOnFailureListener(this, exception -> fetchRootAssignmentsFromFirestore());
-    }
-
-    private void fetchUserAssignmentsFromFirestore(String uid) {
-        firestoreDb.collection(FIRESTORE_USERS_COLLECTION).document(uid)
-            .collection(FIRESTORE_ASSIGNMENTS_COLLECTION).get()
-            .addOnSuccessListener(querySnapshot -> {
-                if (querySnapshot.isEmpty()) fetchRootAssignmentsFromFirestore();
-                else mergeFirestoreAssignments(querySnapshot, "사용자 클라우드");
-            })
-            .addOnFailureListener(exception -> fetchRootAssignmentsFromFirestore());
+        Toast.makeText(this, "공개 과제를 가져오는 중입니다", Toast.LENGTH_SHORT).show();
+        fetchRootAssignmentsFromFirestore();
     }
 
     private void fetchRootAssignmentsFromFirestore() {
-        firestoreDb.collection(FIRESTORE_ASSIGNMENTS_COLLECTION).get()
+        firestoreDb.collection(FIRESTORE_ASSIGNMENTS_COLLECTION).whereEqualTo("visibility", "public")
+            .get(com.google.firebase.firestore.Source.SERVER)
             .addOnSuccessListener(querySnapshot -> {
+                if (isDestroyed() || isFinishing()) return;
                 if (querySnapshot.isEmpty()) {
-                    Toast.makeText(this, "Firestore에 가져올 수행평가가 없습니다", Toast.LENGTH_SHORT).show();
-                } else mergeFirestoreAssignments(querySnapshot, "클라우드");
+                    Toast.makeText(this, "아직 공개된 수행평가가 없어요", Toast.LENGTH_SHORT).show();
+                } else mergeFirestoreAssignments(querySnapshot, "공개 과제");
             })
-            .addOnFailureListener(exception ->
-                Toast.makeText(this, "Firestore 데이터를 가져오지 못했습니다", Toast.LENGTH_SHORT).show());
+            .addOnFailureListener(exception -> {
+                if (!isDestroyed() && !isFinishing()) Toast.makeText(this, "공개 과제를 가져오지 못했습니다", Toast.LENGTH_SHORT).show();
+            });
     }
 
     private void mergeFirestoreAssignments(QuerySnapshot querySnapshot, String sourceLabel) {
         Map<String, Assignment> localById = new HashMap<>();
         for (Assignment local : assignments) {
-            if (local.id != null && !local.id.isEmpty()) {
-                localById.put(local.id, local);
+            if (!local.cloudId.isEmpty()) {
+                localById.put(local.cloudId, local);
             }
         }
 
@@ -1785,29 +1994,32 @@ public class MainActivity extends Activity {
         int updated = 0;
         for (DocumentSnapshot document : querySnapshot.getDocuments()) {
             Assignment remote = assignmentFromDocument(document);
+            if (AssignmentSync.get(this).hasPending(document.getId())) continue;
             if (remote.title.isEmpty()) {
                 continue;
             }
-            Assignment local = localById.get(remote.id);
+            Assignment local = localById.get(remote.cloudId);
             if (local == null) {
                 assignments.add(remote);
-                localById.put(remote.id, remote);
+                localById.put(remote.cloudId, remote);
                 added++;
             } else {
-                copyAssignment(remote, local);
+                if (local.isPublic) copyAssignment(remote, local);
                 updated++;
             }
         }
 
         saveAssignments();
         refreshUi();
-        Toast.makeText(this, sourceLabel + "에서 " + added + "개 추가, " + updated + "개 갱신", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, sourceLabel + " " + added + "개를 추가하고 " + updated + "개를 업데이트했어요", Toast.LENGTH_SHORT).show();
     }
 
     private Assignment assignmentFromDocument(DocumentSnapshot document) {
         Assignment assignment = new Assignment();
-        String id = document.getString("id");
-        assignment.id = id == null || id.isEmpty() ? document.getId() : id;
+        assignment.id = "cloud-" + document.getId();
+        assignment.cloudId = document.getId();
+        assignment.ownerUid = safeString(document.getString("ownerUid"));
+        assignment.isPublic = true;
         assignment.title = safeString(document.getString("title"));
         assignment.subject = safeString(document.getString("subject"));
         assignment.detail = safeString(document.getString("detail"));
@@ -1819,14 +2031,6 @@ public class MainActivity extends Activity {
         Boolean complete = document.getBoolean("complete");
         assignment.complete = complete != null && complete;
 
-        Object photos = document.get("photos");
-        if (photos instanceof List<?>) {
-            for (Object photo : (List<?>) photos) {
-                if (photo != null) {
-                    assignment.photos.add(photo.toString());
-                }
-            }
-        }
         return assignment;
     }
 
@@ -1850,15 +2054,16 @@ public class MainActivity extends Activity {
     }
 
     private void copyAssignment(Assignment source, Assignment target) {
-        target.id = source.id;
+        // Keep the local ID (draft references) and device-only photos stable on refresh.
+        target.cloudId = source.cloudId;
+        target.ownerUid = source.ownerUid;
+        target.isPublic = source.isPublic;
         target.title = source.title;
         target.subject = source.subject;
         target.detail = source.detail;
         target.period = source.period;
         target.dueMillis = source.dueMillis;
         target.complete = source.complete;
-        target.photos.clear();
-        target.photos.addAll(source.photos);
     }
 
     private String safeString(String value) {
@@ -1883,6 +2088,48 @@ public class MainActivity extends Activity {
             array.put(assignment.toJson());
         }
         prefs.edit().putString(KEY_ASSIGNMENTS, array.toString()).apply();
+        ReminderScheduler.reschedule(this);
+    }
+
+    private boolean ownsPublication(Assignment assignment) {
+        FirebaseUser user = firebaseAuth.getCurrentUser();
+        return user != null && !user.isAnonymous() && user.getUid().equals(assignment.ownerUid);
+    }
+
+    private boolean canManagePublication(Assignment assignment) {
+        if (isLocalOnly(assignment) || ownsPublication(assignment)) return true;
+        Toast.makeText(this, "공개 과제를 등록한 계정으로 로그인해 주세요", Toast.LENGTH_LONG).show();
+        return false;
+    }
+
+    private boolean savePublication(Assignment changed, boolean deleting) {
+        Map<String, Object> payload = null;
+        if (changed.isPublic && !deleting) {
+            try {
+                payload = AssignmentPublication.fields(changed.cloudId, changed.ownerUid, changed.title,
+                    changed.subject, changed.period, changed.detail, changed.dueMillis, changed.complete);
+            } catch (IllegalArgumentException error) { return false; }
+        }
+        JSONArray array = new JSONArray();
+        for (Assignment item : assignments) array.put(item.toJson());
+        AssignmentSync sync = AssignmentSync.get(this);
+        if (!sync.save(array, changed.cloudId, changed.ownerUid, payload)) return false;
+        ReminderScheduler.reschedule(this);
+        sync.retry();
+        return true;
+    }
+
+    private boolean isLocalOnly(Assignment assignment) {
+        return assignment.cloudId.isEmpty() || (!assignment.isPublic
+            && !AssignmentSync.get(this).hasPending(assignment.cloudId));
+    }
+
+    private void detachUnpublished(Assignment assignment) {
+        // A private conversion has become purely local only after deletion acknowledgement.
+        if (!assignment.isPublic && isLocalOnly(assignment)) {
+            assignment.cloudId = "";
+            assignment.ownerUid = "";
+        }
     }
 
     private String dDayText(long dueMillis) {
@@ -2370,6 +2617,10 @@ public class MainActivity extends Activity {
         String period = "1교시";
         long dueMillis;
         boolean complete;
+        // Additive fields: legacy JSON without these remains private and is never uploaded.
+        boolean isPublic;
+        String cloudId = "";
+        String ownerUid = "";
         final List<String> photos = new ArrayList<>();
 
         JSONObject toJson() {
@@ -2382,6 +2633,9 @@ public class MainActivity extends Activity {
                 object.put("period", period);
                 object.put("dueMillis", dueMillis);
                 object.put("complete", complete);
+                object.put("visibility", isPublic ? "public" : "private");
+                object.put("cloudId", cloudId);
+                object.put("ownerUid", ownerUid);
                 JSONArray photoArray = new JSONArray();
                 for (String photo : photos) {
                     photoArray.put(photo);
@@ -2401,6 +2655,9 @@ public class MainActivity extends Activity {
             assignment.period = object.optString("period", "1교시");
             assignment.dueMillis = object.optLong("dueMillis", System.currentTimeMillis());
             assignment.complete = object.optBoolean("complete", false);
+            assignment.isPublic = "public".equals(object.optString("visibility", "private"));
+            assignment.cloudId = object.optString("cloudId", "");
+            assignment.ownerUid = object.optString("ownerUid", "");
             JSONArray photoArray = object.optJSONArray("photos");
             if (photoArray != null) {
                 for (int i = 0; i < photoArray.length(); i++) {

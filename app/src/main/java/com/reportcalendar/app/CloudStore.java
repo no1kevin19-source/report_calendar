@@ -11,10 +11,15 @@ import java.util.*;
 final class CloudStore {
     private static final Map<String, List<Task<Void>>> writes = new HashMap<>();
     static synchronized Task<Void> saveProfile(FirebaseApp app, FirebaseUser user) {
+        if (user.isAnonymous() || !user.isEmailVerified())
+            return Tasks.forException(new IllegalStateException("Email verification required before profile storage"));
         String uid = user.getUid();
         if (uid.equals(DeletionJournal.pendingUid(app.getApplicationContext())))
             return Tasks.forException(new IllegalStateException("Deletion requires reconciliation"));
-        Task<Void> task = writeProfile(app, user, false);
+        Task<Void> task = user.getIdToken(true).continueWithTask(token -> {
+            if (!token.isSuccessful()) return Tasks.forException(token.getException());
+            return writeProfile(app, user, false);
+        });
         if (!writes.containsKey(uid)) writes.put(uid, new ArrayList<>());
         writes.get(uid).add(task);
         task.addOnCompleteListener(done -> {
@@ -26,6 +31,9 @@ final class CloudStore {
         return task;
     }
     private static Task<Void> writeProfile(FirebaseApp app, FirebaseUser user, boolean recovery) {
+        // This gate also covers rollback; recovery must not create an unverified profile.
+        if (user.isAnonymous() || !user.isEmailVerified())
+            return Tasks.forException(new IllegalStateException("Email verification required before profile storage"));
         FirebaseFirestore db = FirebaseFirestore.getInstance(app);
         DocumentReference ref = db.collection("users").document(user.getUid());
         Map<String, Object> fields = new HashMap<>();
@@ -34,6 +42,8 @@ final class CloudStore {
         fields.put("displayName", user.getDisplayName() == null ? "" : user.getDisplayName());
         fields.put("updatedAt", FieldValue.serverTimestamp());
         return db.runTransaction(tx -> {
+            if (user.isAnonymous() || !user.isEmailVerified())
+                throw new IllegalStateException("Email verification required before profile storage");
             if (!recovery && user.getUid().equals(DeletionJournal.pendingUid(app.getApplicationContext())))
                 throw new IllegalStateException("Deletion requires reconciliation");
             tx.get(ref);

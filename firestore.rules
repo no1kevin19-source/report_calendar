@@ -1,6 +1,7 @@
 rules_version = '2';
 // users/{uid}: uid, email, displayName (strings), updatedAt (server timestamp).
-// User profiles only. Schedules, passwords and tokens are not stored here.
+// assignments/{id}: public text only; ownerUid is immutable. See ASSIGNMENTS_SYNC.md.
+// No passwords, tokens, device photo URIs or private schedules.
 service cloud.firestore {
   match /databases/{database}/documents {
     function isAuthenticated() {
@@ -20,8 +21,30 @@ service cloud.firestore {
     }
     match /users/{uid} {
       allow read, delete: if isOwner(uid);
-      allow create: if isOwner(uid) && validUser(uid);
-      allow update: if isOwner(uid) && validUser(uid) && request.resource.data.uid == resource.data.uid;
+      // Verification restricts profile writes only; ownership still governs reads/deletes.
+      allow create: if isOwner(uid) && request.auth.token.email_verified == true && validUser(uid);
+      allow update: if isOwner(uid) && request.auth.token.email_verified == true
+        && validUser(uid) && request.resource.data.uid == resource.data.uid;
+    }
+    function validAssignment(id) {
+      let d = request.resource.data;
+      return d.keys().hasAll(['id','ownerUid','visibility','title','subject','period','detail','dueMillis','complete','updatedAt'])
+        && d.keys().hasOnly(['id','ownerUid','visibility','title','subject','period','detail','dueMillis','complete','updatedAt'])
+        && d.id == id && validString(d.id, 1, 200)
+        && d.ownerUid == request.auth.uid && validString(d.ownerUid, 1, 128)
+        && d.visibility == 'public'
+        && validString(d.title, 1, 200) && validString(d.subject, 1, 100)
+        && validString(d.period, 1, 20) && validString(d.detail, 0, 10000)
+        && d.dueMillis is int && d.dueMillis >= 0 && d.dueMillis <= 253402300799999
+        && d.complete is bool && d.updatedAt == request.time;
+    }
+    match /assignments/{id} {
+      allow get: if isAuthenticated() && (!exists(/databases/$(database)/documents/assignments/$(id)) || resource.data.visibility == 'public');
+      allow list: if isAuthenticated() && resource.data.visibility == 'public';
+      allow create: if isAuthenticated() && validAssignment(id);
+      allow update: if isOwner(resource.data.ownerUid) && validAssignment(id)
+        && request.resource.data.ownerUid == resource.data.ownerUid;
+      allow delete: if isOwner(resource.data.ownerUid);
     }
     match /{document=**} { allow read, write: if false; }
   }
